@@ -1,0 +1,8 @@
+id,notes
+C101,"Healthcare vertical, strict compliance requirements. Needs SOC2 documentation before expanding usage. Currently on basic plan."
+C102,"Fintech startup, Series B. Using our platform for fraud detection pipeline. Very technical team, files detailed bug reports."
+C103,"Retail chain, 200+ stores. Rolled out to 3 pilot locations. Positive feedback from store managers but IT team wants SSO integration."
+C104,"Education nonprofit, got in through our community program. Low revenue but strong case study potential. Using NLP features creatively."
+C105,"Government contractor, long procurement cycle. Finally signed after 8 months. Needs air-gapped deployment option eventually."
+C106,"Marketing agency, manages 12 client accounts on our platform. Biggest concern is multi-tenant reporting. Pays on time, rarely contacts support."
+C107,"E-commerce company, peak season coming up. Asked about autoscaling and rate limits. Last year had an outage during Black Friday."

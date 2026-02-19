@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.la-analyzer/
+.pytest_cache/
+.ruff_cache/
+*.pdf
+.DS_Store
