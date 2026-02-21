@@ -17,12 +17,17 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf = [
-    "markdown>=3.5",
-    "weasyprint>=60",
+    "fpdf2>=2.8",
+]
+security = [
+    "bandit>=1.7",
+    "detect-secrets>=1.4",
 ]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4",
+    "bandit>=1.7",
+    "detect-secrets>=1.4",
 ]
 
 [project.scripts]

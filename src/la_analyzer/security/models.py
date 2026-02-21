@@ -41,7 +41,7 @@ class DataFlowRisk(BaseModel):
 
 class CredentialLeakRisk(BaseModel):
     credential_name: str
-    leak_target: str    # "llm_prompt", "log_output", "http_request", "output_file"
+    leak_target: str    # "llm_prompt", "log_output", "http_request", "http_auth", "output_file"
     description: str
     evidence: list[Evidence] = Field(default_factory=list)
     severity: str = "critical"

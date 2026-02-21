@@ -63,14 +63,54 @@ _SDK_CONSTRUCTORS: dict[str, str] = {
     "Cohere": "cohere",
 }
 
+# Well-known default domains for SDK libraries.
+# Used when static analysis can't resolve a URL but the library's destination is known.
+_DEFAULT_DOMAINS: dict[str, list[str]] = {
+    "openai": ["api.openai.com"],
+    "anthropic": ["api.anthropic.com"],
+    "langchain_openai": ["api.openai.com"],
+    "langchain_anthropic": ["api.anthropic.com"],
+    "cohere": ["api.cohere.com"],
+    "groq": ["api.groq.com"],
+    "together": ["api.together.xyz"],
+    "replicate": ["api.replicate.com"],
+    "huggingface_hub": ["huggingface.co"],
+    "litellm": ["api.openai.com"],  # litellm proxies; default is OpenAI-compatible
+    "google": ["generativelanguage.googleapis.com"],
+    "supabase": ["*.supabase.co"],
+    "firebase_admin": ["*.firebaseio.com"],
+    "boto3": ["*.amazonaws.com"],
+    "psycopg2": ["(configured host)"],
+    "asyncpg": ["(configured host)"],
+    "pymongo": ["(configured host)"],
+    "redis": ["(configured host)"],
+}
+
 # Regex for URLs/domains in string literals
 _URL_RE = re.compile(
     r"""["'](https?://([a-zA-Z0-9.-]+(?:\.[a-zA-Z]{2,}))[^"']*?)["']"""
 )
 
-# Regex for model name literals
+# Regex for model name literals (also used bare, without quotes, for constant resolution)
+_MODEL_NAME_RE = re.compile(
+    r"(?:gpt-[34][a-z0-9.-]*"
+    r"|o[1-9]-[a-z]*"
+    r"|text-davinci[a-z0-9-]*"
+    r"|text-embedding-[a-z0-9.-]*"
+    r"|claude-[a-z0-9.-]+"
+    r"|gemini-[a-z0-9.-]+"
+    r"|llama-?[a-z0-9.-]*"
+    r"|mistral-[a-z0-9.-]+"
+    r"|command-r[a-z0-9.-]*"
+    r"|grok-[a-z0-9.-]*"
+    r"|dall-e-[a-z0-9.-]*"
+    r"|whisper-[a-z0-9.-]*"
+    r"|tts-[a-z0-9.-]*)",
+    re.IGNORECASE,
+)
+# Wrapped version for scanning source text (matches quoted strings)
 _MODEL_RE = re.compile(
-    r"""["'](gpt-[34][a-z0-9-]*|claude-[a-z0-9.-]+|o[1-9]-[a-z]*|text-davinci[a-z0-9-]*)["']""",
+    r"""["'](""" + _MODEL_NAME_RE.pattern + r""")["']""",
     re.IGNORECASE,
 )
 
@@ -127,6 +167,22 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                 if cname in _SDK_CONSTRUCTORS and isinstance(node.target, ast.Name):
                     sdk_vars.add(node.target.id)
 
+        # Collect simple string constants: NAME = "literal"
+        str_constants: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target = node.targets[0]
+                if (isinstance(target, ast.Name)
+                        and isinstance(node.value, ast.Constant)
+                        and isinstance(node.value.value, str)):
+                    str_constants[target.id] = node.value.value
+
+        # Scan constant values for model names
+        for val in str_constants.values():
+            m = _MODEL_NAME_RE.fullmatch(val)
+            if m:
+                models_found.add(m.group(0))
+
         # Second pass: find call sites
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -137,6 +193,15 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                 file=rel, line=node.lineno,
                 snippet=_snippet(source, node.lineno),
             )
+
+            # Resolve model=VAR keyword args through constants dict
+            for kw in node.keywords:
+                if kw.arg == "model" and isinstance(kw.value, ast.Name):
+                    resolved = str_constants.get(kw.value.id)
+                    if resolved:
+                        m = _MODEL_NAME_RE.fullmatch(resolved)
+                        if m:
+                            models_found.add(m.group(0))
 
             # SDK constructor calls (OpenAI(), Anthropic(), etc.)
             if attr in _SDK_CONSTRUCTORS:
@@ -254,6 +319,11 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
             existing.confidence = max(existing.confidence, c.confidence)
         else:
             deduped[key] = c.model_copy()
+
+    # Fill in well-known default domains for calls with no resolved domains
+    for c in deduped.values():
+        if not c.domains and c.library in _DEFAULT_DOMAINS:
+            c.domains = list(_DEFAULT_DOMAINS[c.library])
 
     unique_calls = list(deduped.values())
 

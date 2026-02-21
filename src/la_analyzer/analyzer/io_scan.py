@@ -31,6 +31,7 @@ _EXT_TO_FORMAT = {
     ".wav": "audio",
     ".mp3": "audio",
     ".flac": "audio",
+    ".jsonl": "json",
     ".parquet": "parquet",
     ".txt": "text",
     ".yaml": "yaml",
@@ -60,7 +61,7 @@ _PANDAS_WRITERS = {
 
 # Regex fallback for paths
 _PATH_PATTERN = re.compile(
-    r"""["']([A-Za-z0-9_./ \\-]+\.(csv|json|xlsx?|pdf|zip|png|jpg|html?|md|txt|wav|mp3))["']"""
+    r"""["']([A-Za-z0-9_./ \\-]+\.(csv|jsonl?|xlsx?|pdf|zip|png|jpg|html?|md|txt|wav|mp3))["']"""
 )
 
 
@@ -127,6 +128,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
             # open(...) calls
             if isinstance(node, ast.Call) and _call_name(node) == "open":
                 path_lit = _first_str_arg(node)
+                is_computed = False
                 # If the first arg is a computed path, extract filename
                 if not path_lit and node.args:
                     arg = node.args[0]
@@ -134,6 +136,8 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     # Try resolving variable reference
                     if not path_lit and isinstance(arg, ast.Name) and arg.id in assigns:
                         path_lit = _extract_filename_from_expr(assigns[arg.id])
+                    if path_lit:
+                        is_computed = True
                 mode = _get_mode_arg(node)
                 ev = Evidence(
                     file=rel, line=node.lineno,
@@ -159,7 +163,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                             evidence=[ev], confidence=0.5,
                         ))
                         _output_counter += 1
-                    if path_lit:
+                    if path_lit and not is_computed:
                         hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
                 else:
                     fmt = _format_from_path(path_lit)
@@ -172,7 +176,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                             evidence=[ev], confidence=0.8,
                         ))
                         _input_counter += 1
-                    if path_lit:
+                    if path_lit and not is_computed:
                         hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
 
             # pd.read_* calls
@@ -238,11 +242,14 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                 if attr in ("write_text", "write_bytes"):
                     # Try to extract path from Path("literal").write_text()
                     path_lit = _extract_path_literal(node)
+                    is_computed = False
                     # Try resolving receiver variable: summary_path.write_text()
                     if not path_lit and isinstance(node.func, ast.Attribute):
                         receiver = node.func.value
                         if isinstance(receiver, ast.Name) and receiver.id in assigns:
                             path_lit = _extract_filename_from_expr(assigns[receiver.id])
+                            if path_lit:
+                                is_computed = True
                     fmt = _format_from_path(path_lit) if path_lit else "unknown"
                     ev = Evidence(
                         file=rel, line=node.lineno,
@@ -265,7 +272,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                             evidence=[ev], confidence=0.5,
                         ))
                         _output_counter += 1
-                    if path_lit:
+                    if path_lit and not is_computed:
                         hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
 
             # argparse add_argument with default file paths or directories

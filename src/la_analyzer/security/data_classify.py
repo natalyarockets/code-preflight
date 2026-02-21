@@ -75,6 +75,8 @@ def classify_data(workspace: Path, py_files: list[Path]) -> list[DataClassificat
         "credential": [],
     }
 
+    hashing_evidence: list[Evidence] = []
+
     for fpath in py_files:
         rel = str(fpath.relative_to(workspace))
         try:
@@ -85,8 +87,28 @@ def classify_data(workspace: Path, py_files: list[Path]) -> list[DataClassificat
             _regex_classify(source, rel, categories)
             continue
 
+        # Track hashlib/bcrypt imports separately
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in ("hashlib", "bcrypt"):
+                        hashing_evidence.append(
+                            Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
+                        )
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module in ("hashlib", "bcrypt"):
+                    hashing_evidence.append(
+                        Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
+                    )
+
         _ast_classify(tree, source, rel, categories)
         _regex_classify(source, rel, categories)
+
+    # Only add hashing signal if real PII fields were already detected
+    if hashing_evidence and categories["pii"]:
+        categories["pii"].append(
+            (["hashing_detected (positive signal)"], hashing_evidence)
+        )
 
     # Build results
     results: list[DataClassification] = []
@@ -190,15 +212,6 @@ def _ast_classify(
                                 ([label], [ev])
                             )
                             break
-
-        # Check hashlib/bcrypt near data — indicates PII handling awareness
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in ("hashlib", "bcrypt"):
-                    ev = Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
-                    categories["pii"].append(
-                        (["hashing_detected (positive signal)"], [ev])
-                    )
 
 
 def _regex_classify(

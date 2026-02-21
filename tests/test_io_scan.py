@@ -89,6 +89,48 @@ args = parser.parse_args()
         assert isinstance(report, type(report))  # no crash
 
 
+def test_jsonl_format_detected():
+    """'.jsonl' files should get format 'json'."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "writer.py", '''
+with open("chunks.jsonl", "w") as f:
+    f.write("{}")
+''')
+        report = scan_io(ws, [f])
+        assert any(o.format == "json" and o.path_literal == "chunks.jsonl" for o in report.outputs)
+
+
+def test_computed_path_not_hardcoded():
+    """output_dir / 'file.json' should NOT be in hardcoded_paths."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "writer.py", '''
+from pathlib import Path
+output_dir = Path("/output")
+out_path = output_dir / "results.json"
+with open(out_path, "w") as f:
+    f.write("{}")
+''')
+        report = scan_io(ws, [f])
+        # The filename should be detected as an output
+        assert any(o.path_literal == "results.json" for o in report.outputs)
+        # But NOT in hardcoded_paths since it came from a computed expression
+        assert not any(h.path == "results.json" for h in report.hardcoded_paths)
+
+
+def test_bare_literal_still_hardcoded():
+    """open('file.json', 'w') should still be in hardcoded_paths."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "writer.py", '''
+with open("output.json", "w") as f:
+    f.write("{}")
+''')
+        report = scan_io(ws, [f])
+        assert any(h.path == "output.json" for h in report.hardcoded_paths)
+
+
 def test_hardcoded_paths_tracked():
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)

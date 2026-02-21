@@ -1,11 +1,13 @@
 # LA Analyzer
 
-Pre-flight scanner for Python projects. Analyzes your code without running it and produces a report covering structure, dependencies, I/O, external connections, secrets, security risks, and per-entrypoint effect projection.
+Know what your Python project actually does before you deploy it. LA Analyzer scans your code without running it and produces a plain-English report: what data leaves your repo, what secrets are exposed, what could go wrong, and whether it's safe to ship.
+
+Built for people building internal tools with AI coding assistants (Cursor, Claude Code, GitHub Copilot) who want confidence that the code they're deploying is safe. If you can run a terminal command, you can use this.
 
 Three-phase pipeline:
 1. **Structural analysis** -- what the code does (entrypoints, I/O, egress, secrets, deps)
 2. **Security review** -- what could go wrong (injection, data flow, credential leaks, agent risks)
-3. **Effect projection** -- what actually runs (call graph reachability from each entrypoint, dead code separation)
+3. **Effect projection** -- what actually runs (per-entrypoint reachability, separating real effects from unused code)
 
 ## Install
 
@@ -13,18 +15,18 @@ Three-phase pipeline:
 pip install .
 ```
 
-For PDF output: `pip install ".[pdf]"`
+For PDF reports: `pip install ".[pdf]"`
 
 ## Usage
 
 ```bash
-la-scan /path/to/project           # Markdown to stdout
-la-scan project -o report.md       # Markdown to file
-la-scan project -f json            # JSON to stdout
-la-scan project -f pdf -o out.pdf  # PDF (requires .[pdf])
-la-scan project --no-security      # Skip security + projection (faster)
-la-scan project --json-dir /tmp/r  # Custom directory for raw JSON reports
-la-scan project -v                 # Verbose logging
+la-scan ./myproject                          # Markdown to stdout
+la-scan ./myproject -o report.md             # Markdown to file
+la-scan ./myproject -f pdf -o report.pdf     # PDF report
+la-scan ./myproject -f json                  # JSON to stdout
+la-scan ./myproject --no-security            # Skip security + projection (faster)
+la-scan ./myproject --json-dir /tmp/reports  # Custom directory for raw JSON reports
+la-scan ./myproject -v                       # Verbose logging
 ```
 
 ### Options
@@ -38,15 +40,83 @@ la-scan project -v                 # Verbose logging
 | `-v`, `--verbose` | Debug logging |
 | `--version` | Show version |
 
-## What it detects
+## What you get
+
+The report opens with **"If You Deploy This As-Is"**: a plain-English summary of what happens if you ship the code right now. Then:
+
+- **Security gate** -- PASS, REVIEW REQUIRED, or BLOCKED, with severity counts and top risks
+- **Trust boundaries** -- every external service your code talks to, any credentials at risk of leaking, PII flowing to places it shouldn't, hardcoded secrets
+- **Entrypoint effect matrix** -- what each entrypoint reads, writes, sends, and exposes
+- **Security findings** -- detailed findings with severity, description, recommendation, and exact file/line
+- **Call graph** -- which functions call which, per entrypoint
+- **Recommendations** -- specific changes to make the code safer
+
+## Example
+
+```
+$ la-scan examples/sample_batch_app
+```
+
+```markdown
+# sample_batch_app -- Static Runtime Projection and Safety Audit
+
+## If You Deploy This As-Is
+
+- This app sends data to openai (api.openai.com).
+- Makes outbound HTTP requests to dynamically resolved URLs.
+- 2 embedded secret(s) found (dotenv_file, hardcoded_key).
+- No critical or high-severity issues detected.
+
+## Security Summary
+
+> **PASS** -- No critical or high-severity findings.
+
+| Critical | High | Medium | Low |
+|---|---|---|---|
+| 0 | 0 | 2 | 0 |
+
+## Trust Boundaries -- What Leaves This Repo
+
+### Data Egress
+
+- **llm_sdk** via `openai` -> api.openai.com `main.py:23`
+- **http** via `requests` -> unknown `main.py:33`
+
+### Secrets Detected
+
+- **hardcoded_key** (`API_KEY`): `*****************************mnop` `main.py:13`
+
+## Entrypoint Effect Matrix
+
+| Entrypoint | Reachable | Reads | Writes | Sends To | Secrets | PII | LLM |
+|---|---|---|---|---|---|---|---|
+| `python main.py` | 5 | 1 | 3 | 1 | 1 | 1 | 2 |
+
+## Security Findings
+
+### [MEDIUM] Call to requests without timeout
+
+**Severity**: medium | **Category**: injection
+
+**Recommendation**: Review whether this pattern is necessary for this app's function.
+
+  - `main.py:33`
+
+### Data Flow Risks
+
+- [MEDIUM] **uploaded/read file data** -> **output file** (PII: none)
+  - `main.py:57`
+```
+
+## What it checks
 
 ### Phase 1: Structural analysis
 
-**Archetypes and entrypoints.** Identifies whether the project is a batch script, FastAPI web app, or Streamlit app. Finds entrypoint candidates from `if __name__` guards, CLI frameworks (argparse, click, typer, fire), and pyproject.toml console_scripts. Ranks by confidence.
+**Archetypes and entrypoints.** Identifies whether the project is a batch script, FastAPI web app, or Streamlit app. Finds entrypoint candidates from `if __name__` guards, CLI frameworks (argparse, click, typer, fire), and pyproject.toml console_scripts.
 
-**I/O and data flow.** Detects file reads (pandas, open()), file writes (CSV, JSON, Excel, PNG), argparse arguments, FastAPI request parameters, upload handlers, and response models. Flags hardcoded file paths. Extracts full FastAPI route signatures with input/output mapping.
+**I/O and data flow.** Detects file reads (pandas, open()), file writes (CSV, JSON, Excel, PNG), argparse arguments, FastAPI request parameters, upload handlers, and response models. Flags hardcoded file paths.
 
-**External connections.** Catalogs outbound calls: LLM SDKs (OpenAI, Anthropic, Cohere, LangChain), HTTP clients (requests, httpx, aiohttp), databases (psycopg2, SQLAlchemy, pymongo, redis), cloud SDKs (boto3, google-cloud, supabase, firebase). Extracts model names from string literals.
+**External connections.** Catalogs outbound calls: LLM SDKs (OpenAI, Anthropic, Cohere, LangChain), HTTP clients (requests, httpx, aiohttp), databases (psycopg2, SQLAlchemy, pymongo, redis), cloud SDKs (boto3, supabase, firebase).
 
 **Secrets.** Finds hardcoded API keys, .env files, token patterns (sk-\*, AKIA\*, ghp\_\*), and suggests environment variable names.
 
@@ -54,17 +124,17 @@ la-scan project -v                 # Verbose logging
 
 ### Phase 2: Security review
 
-**Code injection.** Flags exec(), eval(), os.system(), subprocess, ctypes, pickle, and dynamic imports with severity-based classification.
+**Code injection.** Flags exec(), eval(), os.system(), subprocess, ctypes, pickle, and dynamic imports.
 
-**Data classification and flow tracing.** Infers PII, financial, health, and credential data from field names and patterns. Traces tainted data from file reads through f-strings and variable assignments to LLM calls, HTTP requests, and file writes. Cross-function analysis: follows data through function parameters and return values.
+**Data classification and flow tracing.** Infers PII, financial, health, and credential data from field names. Traces data from file reads through variable assignments to LLM calls, HTTP requests, and file writes. Follows data across function boundaries.
 
 **Credential leak detection.** Finds secrets flowing to log output, LLM prompts, HTTP request bodies, and output files.
 
-**Dependency vulnerabilities.** pip-audit integration for known CVEs. Typosquat detection using edit distance from popular packages.
+**Dependency vulnerabilities.** pip-audit integration for known CVEs. Typosquat detection via edit distance from popular packages.
 
 **Resource abuse.** Infinite loops (while True without break), fork bombs, unbounded multiprocessing, network calls in tight loops.
 
-**Agent and skill scanning.** Scans Markdown prompt files for template injection (`{user_input}` in system prompts) and credential patterns. Audits YAML/JSON agent configs for overprivileged tools, wildcard permissions, MCP servers without guardrails, and plaintext credentials. Checks Python agent code for `@tool` functions calling subprocess/exec and user input flowing into system messages.
+**Agent and skill scanning.** Template injection in prompt files, overprivileged tools in agent configs, MCP servers without guardrails, user input flowing into system messages.
 
 **Gate decision.** Produces PASS, REVIEW REQUIRED, or BLOCKED based on finding severity:
 
@@ -76,65 +146,29 @@ la-scan project -v                 # Verbose logging
 
 ### Phase 3: Effect projection
 
-**Call graph.** Parses all function and method definitions across every Python file. Extracts call sites and resolves them: local functions, cross-file imports, class methods. Produces a project-wide caller-callee graph.
+**Call graph.** Builds a project-wide caller-callee graph across all Python files, resolving cross-file imports and class methods.
 
-**Entrypoint reachability.** BFS from each detected entrypoint to determine which functions are actually reachable at runtime.
+**Entrypoint reachability.** Determines which functions are actually reachable from each entrypoint at runtime.
 
-**Effect mapping.** Maps every finding from phases 1 and 2 to the entrypoint(s) that can trigger it, using file:line-to-function matching against the reachable set. Findings in unreachable code are separated as dead code.
+**Effect mapping.** Maps every finding to the entrypoint(s) that can trigger it. Findings in code that no entrypoint can reach are separated out so you can focus on what matters.
 
-**Evidence enrichment.** Post-processor adds `function_name` to all evidence objects across every scanner's output, without modifying any scanner code.
+## JSON reports
 
-## Example
+`la-scan` writes raw JSON reports to `<project>/.la-analyzer/`:
 
-```
-$ la-scan examples/sample_batch_app
-```
+| File | Contents |
+|---|---|
+| `detection_report.json` | Archetypes, entrypoints, Python info |
+| `io_report.json` | Inputs, outputs, hardcoded paths, API routes |
+| `egress_report.json` | Outbound calls, gateway recommendations |
+| `secrets_report.json` | Hardcoded keys, .env files, token patterns |
+| `deps_report.json` | Dependencies and sources |
+| `porting_plan.json` | Required and optional changes |
+| `description_report.json` | README content, module docstrings |
+| `security_report.json` | All findings, severity counts, gate decision |
+| `livingapps.yaml` | Generated app manifest |
 
-```markdown
-# Scan Report: sample_batch_app
-
-- **Archetypes**: python_batch (80%)
-- **Python files scanned**: 1
-- **Dependencies**: 4
-- **Inputs detected**: 1
-- **Outputs detected**: 3
-- **External connections**: 2
-- **Secrets found**: 2
-- **Security gate**: PASS
-
-## Entrypoints
-
-| Command / Module | Kind | Confidence | Location |
-|---|---|---|---|
-| `python main.py` | command | 100% | `main.py:3` |
-
-## External Connections
-
-| Kind | Library | Domains | Confidence |
-|---|---|---|---|
-| llm_sdk | `openai` | - | 90% |
-| http | `requests` | - | 85% |
-
-## Entrypoint Projections
-
-### python main.py
-
-Reachable functions: 5
-
-| Source | Effect | Severity | Location |
-|---|---|---|---|
-| secret | Secret: hardcoded_key | high | `main.py:13` |
-| security | Data flow: uploaded/read file data -> output file | medium | `main.py:57` |
-| io | Input: input_0 (file) | info | `main.py:40` |
-| egress | Egress: openai (llm_sdk) | info | `main.py:23` |
-| egress | Egress: requests (http) | info | `main.py:33` |
-
-### Unreachable Findings (dead code)
-
-| Source | Effect | Severity | Location |
-|---|---|---|---|
-| secret | Secret: dotenv_file | high | `.env:1` |
-```
+`la-scan -f json` outputs a single JSON document combining `analysis`, `security`, and `projection`.
 
 ## Library API
 
@@ -167,7 +201,7 @@ result.security.agent_scan            # agent/skill findings (or None)
 result.projection.call_graph.functions
 result.projection.call_graph.edges
 result.projection.projections          # per-entrypoint effects
-result.projection.unreachable_findings # dead code findings
+result.projection.unreachable_findings
 ```
 
 Run subsystems independently:
@@ -186,24 +220,6 @@ security = run_security_review(
 )
 ```
 
-## JSON reports
-
-`la-scan` writes raw JSON reports to `<project>/.la-analyzer/`:
-
-| File | Contents |
-|---|---|
-| `detection_report.json` | Archetypes, entrypoints, Python info |
-| `io_report.json` | Inputs, outputs, hardcoded paths, API routes |
-| `egress_report.json` | Outbound calls, gateway recommendations |
-| `secrets_report.json` | Hardcoded keys, .env files, token patterns |
-| `deps_report.json` | Dependencies and sources |
-| `porting_plan.json` | Required and optional changes |
-| `description_report.json` | README content, module docstrings |
-| `security_report.json` | All findings, severity counts, gate decision |
-| `livingapps.yaml` | Generated app manifest |
-
-`la-scan -f json` outputs a single JSON document combining `analysis`, `security`, and `projection`.
-
 ## Development
 
 ```bash
@@ -211,13 +227,17 @@ pip install -e ".[dev]"
 pytest
 ```
 
-110 tests across 10 test files. Runs in under a second.
+144 tests across 10 test files. Runs in under a second.
 
 ## How it works
 
-Pure static analysis. No code is executed. The scanner walks Python files, parses them into ASTs, and applies pattern-matching to extract structure and detect risks. The call graph resolves cross-file imports and computes reachability to separate real effects from dead code. Agent/skill files (.md, .yaml, .json) are scanned with format-specific heuristics. Files over 2MB and directories like .git, venv, and node_modules are skipped.
+Pure static analysis. No code is executed. The scanner walks Python files, parses them into ASTs, and applies pattern-matching to extract structure and detect risks. The call graph resolves cross-file imports and computes reachability to separate real effects from unused code. Agent/skill files (.md, .yaml, .json) are scanned with format-specific heuristics. Files over 2MB and directories like .git, venv, and node_modules are skipped.
 
 Python >=3.11. Only three runtime dependencies: pydantic, pyyaml, click.
+
+## Deploying safe internal tools
+
+LA Analyzer tells you what's wrong. If you need help fixing it and deploying safely, [Living Apps](https://livingapps.io) is the full platform: managed secrets, egress controls, LLM gateway, and one-click deploys for internal Python tools.
 
 ## License
 

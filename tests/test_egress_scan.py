@@ -120,6 +120,44 @@ s3.upload_file("local.txt", "my-bucket", "remote.txt")
         assert any(c.kind == "cloud" and c.library == "boto3" for c in report.outbound_calls)
 
 
+def test_detects_constant_assigned_model():
+    """model=EMBEDDING_MODEL where EMBEDDING_MODEL = "text-embedding-3-small" should be detected."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "embed.py", '''
+import openai
+
+EMBEDDING_MODEL = "text-embedding-3-small"
+client = openai.OpenAI()
+resp = client.embeddings.create(model=EMBEDDING_MODEL, input="hello")
+''')
+        report = scan_egress(ws, [f])
+        assert "text-embedding-3-small" in report.suggested_gateway_needs.requested_models
+
+
+def test_detects_embedding_model_literal():
+    """Embedding model names in string literals should be detected."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "embed.py", '''
+import openai
+client = openai.OpenAI()
+resp = client.embeddings.create(model="text-embedding-3-small", input="hello")
+''')
+        report = scan_egress(ws, [f])
+        assert "text-embedding-3-small" in report.suggested_gateway_needs.requested_models
+
+
+def test_detects_gemini_model():
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "app.py", '''
+MODEL = "gemini-1.5-pro"
+''')
+        report = scan_egress(ws, [f])
+        assert "gemini-1.5-pro" in report.suggested_gateway_needs.requested_models
+
+
 def test_no_egress():
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)

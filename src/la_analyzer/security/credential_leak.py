@@ -158,14 +158,30 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
             is_http = (func_name in _HTTP_ATTRS_CLEAR or
                        (func_name in _HTTP_ATTRS_AMBIGUOUS and bool(file_imports & _HTTP_LIBS)))
             if is_http:
+                # Distinguish: secret only in headers= keyword (legitimate auth)
+                # vs secret in body/URL/other positions (potential leak)
+                only_in_headers = _secret_only_in_headers(node, leaked_vars)
                 seen.add(key)
-                risks.append(CredentialLeakRisk(
-                    credential_name=cred_name,
-                    leak_target="http_request",
-                    description=f"Secret variable(s) {cred_name} used in HTTP {func_name}() call",
-                    evidence=[ev],
-                    severity="high",
-                ))
+                if only_in_headers:
+                    risks.append(CredentialLeakRisk(
+                        credential_name=cred_name,
+                        leak_target="http_auth",
+                        description=(
+                            f"Secret variable(s) {cred_name} used as HTTP auth header in {func_name}() call. "
+                            f"This is expected for service authentication. Ensure the target service "
+                            f"has proper access controls (RLS, API scoping, IP allowlisting)."
+                        ),
+                        evidence=[ev],
+                        severity="info",
+                    ))
+                else:
+                    risks.append(CredentialLeakRisk(
+                        credential_name=cred_name,
+                        leak_target="http_request",
+                        description=f"Secret variable(s) {cred_name} used in HTTP {func_name}() call",
+                        evidence=[ev],
+                        severity="high",
+                    ))
                 continue
 
             # Check 3: secrets in LLM prompt construction
@@ -227,6 +243,41 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                                         ))
 
     return risks
+
+
+def _secret_only_in_headers(call: ast.Call, secret_vars: set[str]) -> bool:
+    """Check if secret vars appear ONLY in the headers= keyword arg.
+
+    headers={"Api-Key": API_KEY} is legitimate auth, not a leak.
+    """
+    # Find the headers keyword
+    headers_kw = None
+    for kw in call.keywords:
+        if kw.arg == "headers":
+            headers_kw = kw
+            break
+
+    if headers_kw is None:
+        return False
+
+    # Check that secrets appear in headers but NOT in other parts of the call
+    names_in_headers = _collect_names(headers_kw)
+    secrets_in_headers = names_in_headers & secret_vars
+
+    if not secrets_in_headers:
+        return False
+
+    # Check that no secrets appear outside of headers
+    # Collect names from all other args/keywords
+    names_outside: set[str] = set()
+    for arg in call.args:
+        names_outside |= _collect_names(arg)
+    for kw in call.keywords:
+        if kw.arg != "headers":
+            names_outside |= _collect_names(kw)
+
+    secrets_outside = names_outside & secret_vars
+    return len(secrets_outside) == 0
 
 
 def _target_name(node: ast.expr) -> str | None:
