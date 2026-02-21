@@ -207,6 +207,47 @@ MODEL_MAP = {"gpt": ChatOpenAI, "claude": ChatAnthropic}
         assert "langchain_anthropic" in libs
 
 
+def test_dynamic_sdk_class_in_tuple_list():
+    """SDK classes nested inside tuples within a list (common dispatch pattern)."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "llm_select.py", '''
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+
+model_options = [
+    ("gpt-4o", ChatOpenAI),
+    ("gpt-3.5-turbo-0125", ChatOpenAI),
+    ("claude-3-opus-20240229", ChatAnthropic),
+    ("claude-3-5-sonnet-20241022", ChatAnthropic),
+]
+''')
+        report = scan_egress(ws, [f])
+        libs = {c.library for c in report.outbound_calls}
+        assert "langchain_openai" in libs
+        assert "langchain_anthropic" in libs
+
+
+def test_dynamic_sdk_class_in_annotated_assignment():
+    """SDK classes in type-annotated list assignment (AnnAssign)."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "llm_select.py", '''
+from typing import List, Tuple, Type
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+
+model_options: List[Tuple[str, Type]] = [
+    ("gpt-4o", ChatOpenAI),
+    ("claude-3-5-sonnet", ChatAnthropic),
+]
+''')
+        report = scan_egress(ws, [f])
+        libs = {c.library for c in report.outbound_calls}
+        assert "langchain_openai" in libs
+        assert "langchain_anthropic" in libs
+
+
 def test_no_egress():
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)

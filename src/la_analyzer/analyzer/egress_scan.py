@@ -169,46 +169,56 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
 
         # Track variables assigned to SDK class references (dynamic dispatch)
         # e.g. provider_cls = ChatAnthropic  (no call parens)
+        # Also handles annotated assignments: model_options: List[...] = [...]
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                # Direct class reference: provider_cls = ChatAnthropic
-                if isinstance(node.value, ast.Name) and node.value.id in _SDK_CONSTRUCTORS:
-                    lib = _SDK_CONSTRUCTORS[node.value.id]
-                    root_lib = lib.split("_")[0] if "_" in lib else lib
-                    if root_lib in file_imports or lib in file_imports:
-                        ev = Evidence(
-                            file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
-                        )
-                        calls.append(OutboundCall(
-                            kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
-                            library=lib,
-                            evidence=[ev], confidence=0.7,
-                        ))
+            # Extract value from both Assign and AnnAssign
+            assign_value: ast.expr | None = None
+            assign_line = 0
+            if isinstance(node, ast.Assign) and node.value is not None:
+                assign_value = node.value
+                assign_line = node.lineno
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                assign_value = node.value
+                assign_line = node.lineno
 
-                # SDK classes in list/dict literals
-                # e.g. options = [ChatOpenAI, ChatAnthropic]
-                # e.g. mapping = {"gpt": ChatOpenAI, "claude": ChatAnthropic}
-                if isinstance(node.value, (ast.List, ast.Dict)):
-                    elements: list[ast.expr] = []
-                    if isinstance(node.value, ast.List):
-                        elements = list(node.value.elts)
-                    elif isinstance(node.value, ast.Dict):
-                        elements = [v for v in node.value.values if v is not None]
-                    for elt in elements:
-                        if isinstance(elt, ast.Name) and elt.id in _SDK_CONSTRUCTORS:
-                            lib = _SDK_CONSTRUCTORS[elt.id]
-                            root_lib = lib.split("_")[0] if "_" in lib else lib
-                            if root_lib in file_imports or lib in file_imports:
-                                ev = Evidence(
-                                    file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
-                                )
-                                calls.append(OutboundCall(
-                                    kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
-                                    library=lib,
-                                    evidence=[ev], confidence=0.7,
-                                ))
+            if assign_value is None:
+                continue
+
+            # Direct class reference: provider_cls = ChatAnthropic
+            if isinstance(assign_value, ast.Name) and assign_value.id in _SDK_CONSTRUCTORS:
+                lib = _SDK_CONSTRUCTORS[assign_value.id]
+                root_lib = lib.split("_")[0] if "_" in lib else lib
+                if root_lib in file_imports or lib in file_imports:
+                    ev = Evidence(
+                        file=rel, line=assign_line,
+                        snippet=_snippet(source, assign_line),
+                    )
+                    calls.append(OutboundCall(
+                        kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
+                        library=lib,
+                        evidence=[ev], confidence=0.7,
+                    ))
+
+            # SDK classes in collection literals (list, dict, tuples)
+            # e.g. options = [ChatOpenAI, ChatAnthropic]
+            # e.g. mapping = {"gpt": ChatOpenAI, "claude": ChatAnthropic}
+            # e.g. model_options = [("gpt-4o", ChatOpenAI), ("claude", ChatAnthropic)]
+            if isinstance(assign_value, (ast.List, ast.Dict, ast.Tuple)):
+                # Walk the entire structure to find SDK class refs at any depth
+                for child in ast.walk(assign_value):
+                    if isinstance(child, ast.Name) and child.id in _SDK_CONSTRUCTORS:
+                        lib = _SDK_CONSTRUCTORS[child.id]
+                        root_lib = lib.split("_")[0] if "_" in lib else lib
+                        if root_lib in file_imports or lib in file_imports:
+                            ev = Evidence(
+                                file=rel, line=assign_line,
+                                snippet=_snippet(source, assign_line),
+                            )
+                            calls.append(OutboundCall(
+                                kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
+                                library=lib,
+                                evidence=[ev], confidence=0.7,
+                            ))
 
         # Collect simple string constants: NAME = "literal"
         str_constants: dict[str, str] = {}
