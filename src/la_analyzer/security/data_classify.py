@@ -47,6 +47,16 @@ _CREDENTIAL_FIELDS = re.compile(
     re.IGNORECASE,
 )
 
+# Suffixes that indicate config/toggle variables, not actual data fields.
+# e.g. email_env, phone_retry, ssn_format should NOT be classified as PII.
+_CONFIG_SUFFIXES = {
+    "_env", "_config", "_flag", "_setting", "_mode", "_enabled", "_disabled",
+    "_type", "_format", "_pattern", "_regex", "_template", "_prefix", "_suffix",
+    "_count", "_max", "_min", "_limit", "_timeout", "_retry", "_interval",
+    "_provider", "_service", "_handler", "_factory", "_class", "_module",
+    "_column", "_field", "_key", "_name", "_label", "_header", "_var",
+}
+
 # PII-detecting regex patterns in code (e.g. re.compile(r"\d{3}-\d{2}-\d{4}"))
 _PII_REGEX_PATTERNS = [
     (re.compile(r"\\d\{3\}-\\d\{2\}-\\d\{4\}"), "SSN pattern"),
@@ -244,14 +254,22 @@ def _check_field(
     if value.count(" ") >= 3:
         return
 
-    if _PII_FIELDS.search(value):
+    # Normalize to lowercase for suffix check
+    lower = value.lower()
+
+    if _PII_FIELDS.search(value) and not _has_config_suffix(lower):
         categories["pii"].append(([value], [ev]))
-    if _FINANCIAL_FIELDS.search(value):
+    if _FINANCIAL_FIELDS.search(value) and not _has_config_suffix(lower):
         categories["financial"].append(([value], [ev]))
-    if _HEALTH_FIELDS.search(value):
+    if _HEALTH_FIELDS.search(value) and not _has_config_suffix(lower):
         categories["health"].append(([value], [ev]))
     if _CREDENTIAL_FIELDS.search(value):
         categories["credential"].append(([value], [ev]))
+
+
+def _has_config_suffix(lower_value: str) -> bool:
+    """Check if a lowercase field name ends with a config/toggle suffix."""
+    return any(lower_value.endswith(suffix) for suffix in _CONFIG_SUFFIXES)
 
 
 def _first_str_arg(node: ast.Call) -> str | None:

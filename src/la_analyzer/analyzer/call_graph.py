@@ -81,10 +81,35 @@ def build_call_graph(
         short = fn.name.split(".")[-1]
         name_to_fids[short].append(fid)
 
-    # Pass 2: extract call sites and build edges
+    # HTTP verb decorator attributes — covers FastAPI, Flask, Starlette, etc.
+    _ROUTE_DECORATOR_ATTRS = {
+        "get", "post", "put", "patch", "delete", "head", "options",
+        "route", "api_route", "websocket",
+    }
+
+    # Pass 2: extract call sites and decorator-registered routes, build edges
     for rel, tree in file_trees.items():
         file_imports = imports_map.get(rel, {})
+
+        # Ensure a <module> node exists for this file (decorator edges target it)
+        module_id = f"{rel}::<module>"
+        if module_id not in functions:
+            functions[module_id] = FunctionNode(
+                id=module_id, file=rel, name="<module>",
+                line_start=1, line_end=99999,
+            )
+
         for node in ast.walk(tree):
+            # Decorator-registered route handlers: @app.get("/path") def handler()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for dec in node.decorator_list:
+                    dec_node = dec.func if isinstance(dec, ast.Call) and hasattr(dec, "func") else dec
+                    if (isinstance(dec_node, ast.Attribute)
+                            and dec_node.attr in _ROUTE_DECORATOR_ATTRS):
+                        callee_id = f"{rel}::{node.name}"
+                        if callee_id in functions:
+                            edges.append(CallEdge(caller=module_id, callee=callee_id))
+
             if not isinstance(node, ast.Call):
                 continue
 
@@ -95,13 +120,7 @@ def build_call_graph(
             # Find which function this call is inside
             caller_id = _find_enclosing_function(rel, node.lineno, functions)
             if not caller_id:
-                # Top-level call -- attribute to a synthetic "<module>" node
-                caller_id = f"{rel}::<module>"
-                if caller_id not in functions:
-                    functions[caller_id] = FunctionNode(
-                        id=caller_id, file=rel, name="<module>",
-                        line_start=1, line_end=99999,
-                    )
+                caller_id = module_id
 
             # Resolve the callee
             callee_id = _resolve_call(
@@ -269,12 +288,18 @@ def _identify_entrypoints(
 
     for candidate in detection.entrypoint_candidates:
         if candidate.kind == "command":
-            # "python main.py" -> look for main.py::<module>
-            parts = candidate.value.split()
-            if len(parts) >= 2:
-                script = parts[-1]
+            value = candidate.value
+            # "uvicorn main:app" -> look for main.py::<module>
+            if value.startswith("uvicorn "):
+                module_part = value.split()[1].split(":")[0]  # "main" from "main:app"
+                script = module_part.replace(".", "/") + ".py"
             else:
-                script = candidate.value
+                # "python main.py" -> look for main.py::<module>
+                parts = value.split()
+                if len(parts) >= 2:
+                    script = parts[-1]
+                else:
+                    script = value
             module_id = f"{script}::<module>"
             if module_id in functions:
                 entrypoint_ids.append(module_id)

@@ -9,6 +9,7 @@ SKIP_DIRS = {
     ".git", "__pycache__", "node_modules", "venv", ".venv", "env",
     ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist",
     "build", "egg-info", ".eggs", ".nox", ".la-analyzer",
+    ".ipynb_checkpoints",
 }
 
 # Maximum file size to read (skip large binaries)

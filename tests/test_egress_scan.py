@@ -158,6 +158,55 @@ MODEL = "gemini-1.5-pro"
         assert "gemini-1.5-pro" in report.suggested_gateway_needs.requested_models
 
 
+def test_dynamic_sdk_class_variable():
+    """SDK class assigned to a variable (dynamic dispatch) should register egress."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "dispatch.py", '''
+from langchain_anthropic import ChatAnthropic
+
+provider_cls = ChatAnthropic
+client = provider_cls(model="claude-sonnet-4-20250514")
+''')
+        report = scan_egress(ws, [f])
+        assert any(
+            c.kind == "llm_sdk" and c.library == "langchain_anthropic"
+            for c in report.outbound_calls
+        )
+
+
+def test_dynamic_sdk_class_in_list():
+    """SDK classes in a list should be detected as egress."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "multi.py", '''
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+
+providers = [ChatOpenAI, ChatAnthropic]
+''')
+        report = scan_egress(ws, [f])
+        libs = {c.library for c in report.outbound_calls}
+        assert "langchain_openai" in libs
+        assert "langchain_anthropic" in libs
+
+
+def test_dynamic_sdk_class_in_dict():
+    """SDK classes in a dict should be detected as egress."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "mapping.py", '''
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+
+MODEL_MAP = {"gpt": ChatOpenAI, "claude": ChatAnthropic}
+''')
+        report = scan_egress(ws, [f])
+        libs = {c.library for c in report.outbound_calls}
+        assert "langchain_openai" in libs
+        assert "langchain_anthropic" in libs
+
+
 def test_no_egress():
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)

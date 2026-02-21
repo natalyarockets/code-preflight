@@ -80,6 +80,9 @@ _CRITICAL_TESTS = {"B602", "B605", "B606"}
 # Bandit test_ids that should be at least high severity
 _HIGH_TESTS = {"B102", "B301", "B302", "B307", "B506"}
 
+# Bandit test_ids to suppress — nearly always noise in internal tools
+_SUPPRESS_TESTS = {"B311", "B110", "B101"}
+
 
 def scan_code(workspace: Path, py_files: list[Path]) -> list[SecurityFinding]:
     """Scan Python files for dangerous patterns.
@@ -150,13 +153,19 @@ def _bandit_scan(workspace: Path) -> list[SecurityFinding]:
 
     findings: list[SecurityFinding] = []
     seen: set[str] = set()
+    # Cache source files for snippet extraction
+    source_cache: dict[str, str] = {}
 
     for item in data.get("results", []):
         test_id = item.get("test_id", "")
+
+        # Skip noise findings
+        if test_id in _SUPPRESS_TESTS:
+            continue
+
         filename = item.get("filename", "")
         line = item.get("line_number", 0)
         issue_text = item.get("issue_text", "")
-        code = item.get("code", "").strip()
         bandit_severity = item.get("issue_severity", "LOW").upper()
 
         # Make path relative to workspace
@@ -183,8 +192,8 @@ def _bandit_scan(workspace: Path) -> list[SecurityFinding]:
 
         category = _BANDIT_CATEGORY.get(test_id, "injection")
 
-        # Extract first line of code snippet for evidence
-        snippet = code.split("\n")[0].strip()[:160] if code else ""
+        # Extract snippet from the actual source line, not Bandit's context
+        snippet = _read_source_line(workspace, rel_path, line, source_cache)
 
         findings.append(SecurityFinding(
             category=category,
@@ -482,6 +491,18 @@ def _get_value_name(node: ast.expr) -> str:
     if isinstance(node, ast.Attribute):
         return node.attr
     return ""
+
+
+def _read_source_line(
+    workspace: Path, rel_path: str, lineno: int, cache: dict[str, str],
+) -> str:
+    """Read the actual source line for a finding, caching file contents."""
+    if rel_path not in cache:
+        try:
+            cache[rel_path] = (workspace / rel_path).read_text(errors="replace")
+        except OSError:
+            cache[rel_path] = ""
+    return _snippet(cache[rel_path], lineno)
 
 
 def _snippet(source: str, lineno: int) -> str:

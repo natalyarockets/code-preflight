@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 from la_analyzer.analyzer.service import analyze_repo
+from la_analyzer.utils import discover_files
 
 SAMPLE_APP = Path(__file__).parent.parent / "examples" / "sample_batch_app"
 
@@ -66,3 +67,21 @@ def test_full_analysis():
         assert manifest["runtime"]["entrypoint"]["kind"] == "batch"
         assert manifest["egress"]["mode"] == "deny_by_default"
         assert manifest.get("connections", {}) == {} or "connections" not in manifest
+
+
+def test_ipynb_checkpoints_skipped():
+    """Files inside .ipynb_checkpoints should be excluded from discovery."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        # Create a normal notebook and its checkpoint copy
+        nb = ws / "analysis.py"
+        nb.write_text("x = 1\n")
+        cp_dir = ws / ".ipynb_checkpoints"
+        cp_dir.mkdir()
+        cp = cp_dir / "analysis-checkpoint.py"
+        cp.write_text("x = 1\n")
+
+        files = discover_files(ws)
+        file_strs = [str(f) for f in files]
+        assert any("analysis.py" in s for s in file_strs)
+        assert not any(".ipynb_checkpoints" in s for s in file_strs)

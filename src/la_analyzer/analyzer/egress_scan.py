@@ -167,6 +167,49 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                 if cname in _SDK_CONSTRUCTORS and isinstance(node.target, ast.Name):
                     sdk_vars.add(node.target.id)
 
+        # Track variables assigned to SDK class references (dynamic dispatch)
+        # e.g. provider_cls = ChatAnthropic  (no call parens)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                # Direct class reference: provider_cls = ChatAnthropic
+                if isinstance(node.value, ast.Name) and node.value.id in _SDK_CONSTRUCTORS:
+                    lib = _SDK_CONSTRUCTORS[node.value.id]
+                    root_lib = lib.split("_")[0] if "_" in lib else lib
+                    if root_lib in file_imports or lib in file_imports:
+                        ev = Evidence(
+                            file=rel, line=node.lineno,
+                            snippet=_snippet(source, node.lineno),
+                        )
+                        calls.append(OutboundCall(
+                            kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
+                            library=lib,
+                            evidence=[ev], confidence=0.7,
+                        ))
+
+                # SDK classes in list/dict literals
+                # e.g. options = [ChatOpenAI, ChatAnthropic]
+                # e.g. mapping = {"gpt": ChatOpenAI, "claude": ChatAnthropic}
+                if isinstance(node.value, (ast.List, ast.Dict)):
+                    elements: list[ast.expr] = []
+                    if isinstance(node.value, ast.List):
+                        elements = list(node.value.elts)
+                    elif isinstance(node.value, ast.Dict):
+                        elements = [v for v in node.value.values if v is not None]
+                    for elt in elements:
+                        if isinstance(elt, ast.Name) and elt.id in _SDK_CONSTRUCTORS:
+                            lib = _SDK_CONSTRUCTORS[elt.id]
+                            root_lib = lib.split("_")[0] if "_" in lib else lib
+                            if root_lib in file_imports or lib in file_imports:
+                                ev = Evidence(
+                                    file=rel, line=node.lineno,
+                                    snippet=_snippet(source, node.lineno),
+                                )
+                                calls.append(OutboundCall(
+                                    kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
+                                    library=lib,
+                                    evidence=[ev], confidence=0.7,
+                                ))
+
         # Collect simple string constants: NAME = "literal"
         str_constants: dict[str, str] = {}
         for node in ast.walk(tree):

@@ -45,6 +45,8 @@ def scan_entrypoints(
         has_fastapi = False
         has_uvicorn = False
         has_streamlit = False
+        fastapi_app_var: str | None = None
+        fastapi_app_line: int = 0
         evidences: list[Evidence] = []
 
         for node in ast.walk(tree):
@@ -102,6 +104,13 @@ def scan_entrypoints(
             # FastAPI detection
             if isinstance(node, ast.Call) and _call_name(node) == "FastAPI":
                 has_fastapi = True
+            # Track the variable name assigned to FastAPI() (e.g. app = FastAPI())
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                if _call_name(node.value) == "FastAPI":
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            fastapi_app_var = target.id
+                            fastapi_app_line = node.lineno
             if isinstance(node, ast.Attribute) and node.attr == "run":
                 if isinstance(node.value, ast.Name) and node.value.id == "uvicorn":
                     has_uvicorn = True
@@ -126,6 +135,26 @@ def scan_entrypoints(
                                 file=rel, line=node.lineno,
                                 snippet=_snippet(source, node.lineno),
                             ))
+
+        # FastAPI uvicorn entrypoint — higher priority than generic python command
+        if has_fastapi and fastapi_app_var:
+            module = _module_path(rel)
+            candidates.append(
+                EntrypointCandidate(
+                    kind="command",
+                    value=f"uvicorn {module}:{fastapi_app_var}",
+                    confidence=0.85,
+                    evidence=[
+                        Evidence(
+                            file=rel,
+                            line=fastapi_app_line,
+                            snippet=_snippet(source, fastapi_app_line),
+                        )
+                    ],
+                )
+            )
+            # Skip the lower-confidence generic fallback for this file
+            continue
 
         # Determine if this is a CLI framework entrypoint
         has_cli_framework = has_click or has_typer or has_fire

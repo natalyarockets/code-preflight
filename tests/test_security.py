@@ -750,3 +750,182 @@ subprocess.run(["ls"])
         titles_lower = [f.title.lower() for f in findings]
         assert any("exec" in t for t in titles_lower)
         assert any("subprocess" in t for t in titles_lower)
+
+
+# -- Bandit Noise Suppression --------------------------------------------------
+
+
+def test_bandit_suppresses_b311_random():
+    """B311 (random) should be suppressed — not a security issue for internal tools."""
+    from la_analyzer.security.code_scan import _bandit_scan
+    from unittest.mock import patch
+    import json
+
+    bandit_output = json.dumps({
+        "results": [
+            {
+                "test_id": "B311",
+                "filename": "/tmp/app.py",
+                "line_number": 3,
+                "issue_text": "Standard pseudo-random generators are not suitable for security/cryptographic purposes.",
+                "code": "3 x = random.uniform(0, 1)\n",
+                "issue_severity": "LOW",
+            },
+        ]
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "app.py", "import random\n\nx = random.uniform(0, 1)\n")
+
+        original_run = __import__("subprocess").run
+        def mock_run(cmd, *args, **kwargs):
+            if cmd[0] == "bandit":
+                from types import SimpleNamespace
+                return SimpleNamespace(stdout=bandit_output, returncode=1)
+            return original_run(cmd, *args, **kwargs)
+
+        with patch("la_analyzer.security.code_scan.subprocess.run", side_effect=mock_run):
+            findings = _bandit_scan(ws)
+
+        assert not any("B311" in f.title for f in findings)
+
+
+def test_bandit_suppresses_b110_b101():
+    """B110 (try_except_pass) and B101 (assert) should be suppressed."""
+    from la_analyzer.security.code_scan import _bandit_scan
+    from unittest.mock import patch
+    import json
+
+    bandit_output = json.dumps({
+        "results": [
+            {
+                "test_id": "B110",
+                "filename": "/tmp/app.py",
+                "line_number": 3,
+                "issue_text": "Try, Except, Pass detected.",
+                "code": "3 except: pass\n",
+                "issue_severity": "LOW",
+            },
+            {
+                "test_id": "B101",
+                "filename": "/tmp/app.py",
+                "line_number": 5,
+                "issue_text": "Use of assert detected.",
+                "code": "5 assert x > 0\n",
+                "issue_severity": "LOW",
+            },
+            {
+                "test_id": "B602",
+                "filename": "/tmp/app.py",
+                "line_number": 7,
+                "issue_text": "subprocess call with shell=True identified.",
+                "code": "7 subprocess.run('ls', shell=True)\n",
+                "issue_severity": "HIGH",
+            },
+        ]
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "app.py", (
+            "import subprocess\n"
+            "try:\n"
+            "    x = 1\n"
+            "except:\n"
+            "    pass\n"
+            "assert x > 0\n"
+            "subprocess.run('ls', shell=True)\n"
+        ))
+
+        original_run = __import__("subprocess").run
+        def mock_run(cmd, *args, **kwargs):
+            if cmd[0] == "bandit":
+                from types import SimpleNamespace
+                return SimpleNamespace(stdout=bandit_output, returncode=1)
+            return original_run(cmd, *args, **kwargs)
+
+        with patch("la_analyzer.security.code_scan.subprocess.run", side_effect=mock_run):
+            findings = _bandit_scan(ws)
+
+        # B110 and B101 should be suppressed
+        assert not any("B110" in f.title for f in findings)
+        assert not any("B101" in f.title for f in findings)
+        # But real findings (B602) should remain
+        assert any("B602" in f.title for f in findings)
+
+
+# -- PII Config Suffix Exclusion -----------------------------------------------
+
+
+def test_config_suffix_not_classified_as_pii():
+    """Variables like email_env, phone_retry should NOT be flagged as PII."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write(ws, "config.py", '''
+email_env = "SMTP_EMAIL"
+phone_retry = 3
+ssn_format = "XXX-XX-XXXX"
+address_template = "{street}, {city}"
+''')
+        classifications = classify_data(ws, [f])
+        all_fields = []
+        for c in classifications:
+            all_fields.extend(c.fields_detected)
+        assert "email_env" not in all_fields
+        assert "phone_retry" not in all_fields
+        assert "ssn_format" not in all_fields
+        assert "address_template" not in all_fields
+
+
+def test_real_pii_fields_still_classified():
+    """user_email, phone_number etc. should still be classified as PII."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write(ws, "process.py", '''
+data = {"user_email": "a@b.com", "phone_number": "555-1234"}
+''')
+        classifications = classify_data(ws, [f])
+        pii = [c for c in classifications if c.category == "pii"]
+        assert len(pii) >= 1
+        pii_fields = []
+        for c in pii:
+            pii_fields.extend(c.fields_detected)
+        assert "user_email" in pii_fields or any("email" in f for f in pii_fields)
+
+
+# -- Credential Leak: Body Auth Distinction ------------------------------------
+
+
+def test_secret_in_body_auth_key_medium():
+    """API key in json={"api_key": var} should be MEDIUM, not HIGH."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write(ws, "client.py", '''
+import os
+import requests
+
+api_key = os.environ.get("TAVILY_API_KEY")
+requests.post("https://api.tavily.com/search", json={"api_key": api_key, "query": "test"})
+''')
+        risks = scan_credential_leaks(ws, [f])
+        http_risks = [r for r in risks if r.leak_target == "http_request"]
+        assert len(http_risks) >= 1
+        assert all(r.severity == "medium" for r in http_risks)
+
+
+def test_secret_in_non_auth_body_key_still_high():
+    """API key in json={"data": var} (non-auth key name) should remain HIGH."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write(ws, "bad.py", '''
+import os
+import requests
+
+api_key = os.environ.get("API_KEY")
+requests.post("https://api.example.com/upload", json={"payload": api_key})
+''')
+        risks = scan_credential_leaks(ws, [f])
+        http_risks = [r for r in risks if r.leak_target == "http_request"]
+        assert len(http_risks) >= 1
+        assert all(r.severity == "high" for r in http_risks)

@@ -223,6 +223,80 @@ def test_syntax_error_skipped():
         assert "ok" in fn_names
 
 
+def test_decorator_route_handlers_reachable():
+    """@app.get decorated functions should have edges from <module>."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "main.py", '''
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/predict")
+async def predict(data: dict):
+    return process(data)
+
+def process(data):
+    return {"result": 42}
+''')
+        detection = DetectionReport(
+            entrypoint_candidates=[
+                EntrypointCandidate(
+                    kind="command", value="uvicorn main:app", confidence=0.85,
+                    evidence=[Evidence(file="main.py", line=4, snippet="app = FastAPI()")],
+                ),
+            ],
+        )
+        py_files = [ws / "main.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        # Route handlers should have edges from <module>
+        module_edges = {e.callee for e in graph.edges if e.caller == "main.py::<module>"}
+        assert "main.py::health" in module_edges
+        assert "main.py::predict" in module_edges
+
+        # BFS from <module> should reach health, predict, and process
+        reachable = reachable_from("main.py::<module>", graph)
+        reachable_names = set()
+        for fid in reachable:
+            for fn in graph.functions:
+                if fn.id == fid:
+                    reachable_names.add(fn.name)
+        assert "health" in reachable_names
+        assert "predict" in reachable_names
+        assert "process" in reachable_names
+
+
+def test_flask_decorator_route_handlers():
+    """Flask @app.route decorated functions should also get edges."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "app.py", '''
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "hello"
+
+@app.route("/api", methods=["POST"])
+def api():
+    return "ok"
+''')
+        detection = DetectionReport()
+        py_files = [ws / "app.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        module_edges = {e.callee for e in graph.edges if e.caller == "app.py::<module>"}
+        assert "app.py::index" in module_edges
+        assert "app.py::api" in module_edges
+
+
 # ── Projection Tests ──────────────────────────────────────────────────────
 
 

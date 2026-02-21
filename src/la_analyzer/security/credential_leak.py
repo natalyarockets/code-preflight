@@ -161,6 +161,7 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                 # Distinguish: secret only in headers= keyword (legitimate auth)
                 # vs secret in body/URL/other positions (potential leak)
                 only_in_headers = _secret_only_in_headers(node, leaked_vars)
+                body_auth = _secret_as_api_auth_in_body(node, leaked_vars)
                 seen.add(key)
                 if only_in_headers:
                     risks.append(CredentialLeakRisk(
@@ -173,6 +174,17 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                         ),
                         evidence=[ev],
                         severity="info",
+                    ))
+                elif body_auth:
+                    risks.append(CredentialLeakRisk(
+                        credential_name=cred_name,
+                        leak_target="http_request",
+                        description=(
+                            f"API key {cred_name} sent in request body for {func_name}() call "
+                            f"(standard for this API, but prefer header-based auth)"
+                        ),
+                        evidence=[ev],
+                        severity="medium",
                     ))
                 else:
                     risks.append(CredentialLeakRisk(
@@ -278,6 +290,68 @@ def _secret_only_in_headers(call: ast.Call, secret_vars: set[str]) -> bool:
 
     secrets_outside = names_outside & secret_vars
     return len(secrets_outside) == 0
+
+
+# Dict key names that indicate API authentication (body-based auth)
+_API_AUTH_KEYS = {
+    "api_key", "apikey", "api-key", "apiKey",
+    "token", "access_token", "accessToken", "access-token",
+    "secret_key", "secretKey", "secret-key",
+    "auth_key", "authKey", "auth-key",
+    "authorization",
+}
+
+
+def _secret_as_api_auth_in_body(call: ast.Call, secret_vars: set[str]) -> bool:
+    """Check if secrets appear only as auth keys in a json= body argument.
+
+    json={"api_key": secret} is standard body-based API auth (e.g. Tavily, some
+    search APIs). It's less secure than header auth but not a credential leak.
+    """
+    json_kw = None
+    for kw in call.keywords:
+        if kw.arg == "json":
+            json_kw = kw
+            break
+
+    if json_kw is None:
+        return False
+
+    # json= must be a dict literal to inspect key names
+    if not isinstance(json_kw.value, ast.Dict):
+        return False
+
+    # Check that all secret vars in the dict are under auth-like keys
+    secrets_in_auth_keys: set[str] = set()
+    secrets_in_other_keys: set[str] = set()
+
+    for key_node, val_node in zip(json_kw.value.keys, json_kw.value.values):
+        val_names = _collect_names(val_node)
+        leaked = val_names & secret_vars
+        if not leaked:
+            continue
+
+        key_str = ""
+        if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+            key_str = key_node.value
+
+        if key_str.lower().replace("-", "_") in {k.lower().replace("-", "_") for k in _API_AUTH_KEYS}:
+            secrets_in_auth_keys |= leaked
+        else:
+            secrets_in_other_keys |= leaked
+
+    if not secrets_in_auth_keys:
+        return False
+
+    # Ensure secrets don't also appear in non-auth positions
+    names_outside: set[str] = set()
+    for arg in call.args:
+        names_outside |= _collect_names(arg)
+    for kw in call.keywords:
+        if kw.arg != "json":
+            names_outside |= _collect_names(kw)
+
+    return len(secrets_in_other_keys) == 0 and len(names_outside & secret_vars) == 0
 
 
 def _target_name(node: ast.expr) -> str | None:
