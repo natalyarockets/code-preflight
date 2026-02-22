@@ -41,6 +41,15 @@ def render_markdown(result: ScanResult) -> str:
     # 3. Trust boundaries
     sections.append(_render_trust_boundaries(result))
 
+    # 3b. LLM Prompt Analysis
+    sections.append(_render_prompt_surfaces(result))
+
+    # 3c. Tool Registration Map
+    sections.append(_render_tool_registrations(result))
+
+    # 3d. State Flow
+    sections.append(_render_state_flow(result))
+
     # 4. Entrypoint effect matrix
     sections.append(_render_entrypoint_matrix(result))
 
@@ -178,6 +187,77 @@ def _render_trust_boundaries(result: ScanResult) -> str:
     return "\n".join(lines)
 
 
+# ── 3b. LLM Prompt Analysis ───────────────────────────────────────────────
+
+
+def _render_prompt_surfaces(result: ScanResult) -> str:
+    ps = result.analysis.prompt_surface
+    if not ps.surfaces:
+        return ""
+
+    lines: list[str] = []
+    lines.append("## LLM Prompt Analysis\n")
+    lines.append("| Function | Method | Variables | Constants | Location |")
+    lines.append("|---|---|---|---|---|")
+
+    for s in ps.surfaces:
+        vars_str = ", ".join(f"`{v.name}`" for v in s.prompt_variables) or "-"
+        consts_str = ", ".join(f"`{c}`" for c in s.string_constants) or "-"
+        lines.append(f"| `{s.function}` | {s.llm_method} | {vars_str} | {consts_str} | `{s.file}:{s.line}` |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── 3c. Tool Registration Map ────────────────────────────────────────────
+
+
+def _render_tool_registrations(result: ScanResult) -> str:
+    tr = result.analysis.tool_registration
+    if not tr.tools:
+        return ""
+
+    lines: list[str] = []
+    lines.append("## Registered Tools\n")
+    lines.append("| Tool | Registration | Parameters | Capabilities | Location |")
+    lines.append("|---|---|---|---|---|")
+
+    for t in tr.tools:
+        params = ", ".join(f"`{p}`" for p in t.parameters) or "-"
+        caps = ", ".join(f"{c.kind}" for c in t.capabilities) or "compute"
+        lines.append(f"| `{t.name}` | {t.registration} | {params} | {caps} | `{t.file}:{t.line}` |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── 3d. State Flow ───────────────────────────────────────────────────────
+
+
+def _render_state_flow(result: ScanResult) -> str:
+    sf = result.analysis.state_flow
+    if not sf.node_flows:
+        return ""
+
+    lines: list[str] = []
+    lines.append("## State Flow\n")
+
+    if sf.state_class:
+        keys_str = ", ".join(f"`{k}`" for k in sf.state_keys)
+        lines.append(f"**State class**: `{sf.state_class}` with keys: {keys_str}\n")
+
+    lines.append("| Node | Reads | Writes | Location |")
+    lines.append("|---|---|---|---|")
+
+    for nf in sf.node_flows:
+        reads = ", ".join(f"`{r}`" for r in nf.reads) or "-"
+        writes = ", ".join(f"`{w}`" for w in nf.writes) or "-"
+        lines.append(f"| `{nf.function}` | {reads} | {writes} | `{nf.file}:{nf.line_start}` |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ── 4. Entrypoint Effect Matrix ────────────────────────────────────────────
 
 
@@ -188,8 +268,8 @@ def _render_entrypoint_matrix(result: ScanResult) -> str:
 
     lines: list[str] = []
     lines.append("## Entrypoint Effect Matrix\n")
-    lines.append("| Entrypoint | Reachable | Reads | Writes | Sends To | Secrets | PII | LLM |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| Entrypoint | Reachable | Reads | Writes | Sends To | Secrets | PII | LLM | Prompts | Tools |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
 
     for ep in p.projections:
         reads = 0
@@ -198,6 +278,8 @@ def _render_entrypoint_matrix(result: ScanResult) -> str:
         secrets = 0
         pii = 0
         llm = 0
+        prompts = 0
+        tools = 0
 
         for eff in ep.effects:
             src = eff.source.lower()
@@ -217,11 +299,15 @@ def _render_entrypoint_matrix(result: ScanResult) -> str:
             elif src == "security":
                 if "pii" in title_lower or "data" in title_lower:
                     pii += 1
+            elif src == "prompt":
+                prompts += 1
+            elif src == "tool":
+                tools += 1
 
         label = ep.entrypoint_label
         reachable = len(ep.reachable_functions)
         lines.append(
-            f"| `{label}` | {reachable} | {reads} | {writes} | {sends} | {secrets} | {pii} | {llm} |"
+            f"| `{label}` | {reachable} | {reads} | {writes} | {sends} | {secrets} | {pii} | {llm} | {prompts} | {tools} |"
         )
 
     lines.append("")

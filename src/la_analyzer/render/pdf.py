@@ -46,7 +46,10 @@ _MUTED = (100, 100, 100)
 _DIVIDER = (200, 200, 200)
 
 # Column widths for standard tables
-_MATRIX_COLS = (52, 18, 16, 16, 18, 16, 16, 16)   # total = 168 < 180
+_MATRIX_COLS = (40, 16, 14, 14, 16, 14, 14, 14, 14, 14)  # total = 170 < 180
+_PROMPT_COLS = (35, 22, 50, 35, 28)               # total = 170 < 180
+_TOOL_COLS = (30, 22, 40, 40, 38)                  # total = 170 < 180
+_STATE_COLS = (35, 50, 50, 35)                     # total = 170 < 180
 _TOOLCHAIN_COLS = (35, 20, 22, 18, 75)              # total = 170 < 180
 _EFFECT_COLS = (30, 55, 22, 63)                      # total = 170 < 180
 
@@ -272,6 +275,9 @@ class _SecurityReportPDF:
         self._render_executive_summary()
         self._render_summary_card()
         self._render_trust_boundaries()
+        self._render_prompt_surfaces()
+        self._render_tool_registrations()
+        self._render_state_flow()
         self._render_entrypoint_matrix()
         self._render_security_findings()
         self._render_call_graph()
@@ -456,6 +462,82 @@ class _SecurityReportPDF:
                 self._pdf.multi_cell(self._content_w, 4.5, self._safe(f"Suggested env vars: {env_vars}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
             self._pdf.ln(2)
 
+    # ── 3b. LLM Prompt Analysis ─────────────────────────────────────────
+
+    def _render_prompt_surfaces(self) -> None:
+        ps = self._result.analysis.prompt_surface
+        if not ps.surfaces:
+            return
+
+        self._heading("LLM Prompt Analysis")
+
+        headers = ["Function", "Method", "Variables", "Constants", "Location"]
+        self._table_header(_PROMPT_COLS, headers)
+
+        for i, s in enumerate(ps.surfaces):
+            vars_str = ", ".join(v.name for v in s.prompt_variables[:5]) or "-"
+            consts_str = ", ".join(s.string_constants[:3]) or "-"
+            self._table_row(_PROMPT_COLS, [
+                s.function, s.llm_method, vars_str, consts_str,
+                f"{s.file}:{s.line}",
+            ], i)
+
+        self._pdf.ln(3)
+
+    # ── 3c. Tool Registration Map ────────────────────────────────────────
+
+    def _render_tool_registrations(self) -> None:
+        tr = self._result.analysis.tool_registration
+        if not tr.tools:
+            return
+
+        self._heading("Registered Tools")
+
+        headers = ["Tool", "Registration", "Parameters", "Capabilities", "Location"]
+        self._table_header(_TOOL_COLS, headers)
+
+        for i, t in enumerate(tr.tools):
+            params = ", ".join(t.parameters[:5]) or "-"
+            caps = ", ".join(c.kind for c in t.capabilities) or "compute"
+            self._table_row(_TOOL_COLS, [
+                t.name, t.registration, params, caps,
+                f"{t.file}:{t.line}",
+            ], i)
+
+        self._pdf.ln(3)
+
+    # ── 3d. State Flow ───────────────────────────────────────────────────
+
+    def _render_state_flow(self) -> None:
+        sf = self._result.analysis.state_flow
+        if not sf.node_flows:
+            return
+
+        self._heading("State Flow")
+
+        if sf.state_class:
+            self._set_body_text()
+            keys_str = ", ".join(sf.state_keys)
+            self._pdf.multi_cell(
+                self._content_w, 4.5,
+                self._safe(f"State class: {sf.state_class} with keys: {keys_str}"),
+                new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT,
+            )
+            self._pdf.ln(2)
+
+        headers = ["Node", "Reads", "Writes", "Location"]
+        self._table_header(_STATE_COLS, headers)
+
+        for i, nf in enumerate(sf.node_flows):
+            reads = ", ".join(nf.reads[:5]) or "-"
+            writes = ", ".join(nf.writes[:5]) or "-"
+            self._table_row(_STATE_COLS, [
+                nf.function, reads, writes,
+                f"{nf.file}:{nf.line_start}",
+            ], i)
+
+        self._pdf.ln(3)
+
     # ── 4. Entrypoint effect matrix ────────────────────────────────────
 
     def _render_entrypoint_matrix(self) -> None:
@@ -465,11 +547,11 @@ class _SecurityReportPDF:
 
         self._heading("Entrypoint Effect Matrix")
 
-        headers = ["Entrypoint", "Reach", "Reads", "Writes", "Sends", "Secrets", "PII", "LLM"]
+        headers = ["Entrypoint", "Reach", "Reads", "Writes", "Sends", "Secrets", "PII", "LLM", "Prompts", "Tools"]
         self._table_header(_MATRIX_COLS, headers)
 
         for row_idx, ep in enumerate(p.projections):
-            reads = writes = sends = secrets = pii = llm = 0
+            reads = writes = sends = secrets = pii = llm = prompts = tools = 0
             for eff in ep.effects:
                 src = eff.source.lower()
                 title_lower = eff.title.lower()
@@ -488,11 +570,15 @@ class _SecurityReportPDF:
                 elif src == "security":
                     if "pii" in title_lower or "data" in title_lower:
                         pii += 1
+                elif src == "prompt":
+                    prompts += 1
+                elif src == "tool":
+                    tools += 1
 
             reachable = len(ep.reachable_functions)
             self._table_row(_MATRIX_COLS, [
                 ep.entrypoint_label, str(reachable), str(reads), str(writes),
-                str(sends), str(secrets), str(pii), str(llm),
+                str(sends), str(secrets), str(pii), str(llm), str(prompts), str(tools),
             ], row_idx)
 
         self._pdf.ln(3)
@@ -713,21 +799,27 @@ class _SecurityReportPDF:
                                visited: set[str], depth: int, max_depth: int) -> None:
         if depth > max_depth:
             return
-        kids = children.get(node_id, [])
-        for i, child_id in enumerate(kids):
-            if child_id in visited:
-                continue
-            visited.add(child_id)
+        # Deduplicate children (same callee may appear multiple times)
+        seen_kids: set[str] = set()
+        unique_kids: list[str] = []
+        for kid in children.get(node_id, []):
+            if kid not in seen_kids:
+                seen_kids.add(kid)
+                unique_kids.append(kid)
+
+        for i, child_id in enumerate(unique_kids):
             name, file = fn_info.get(child_id, (child_id, ""))
-            is_last = i == len(kids) - 1
-            prefix = "    " * (depth - 1)
+            is_last = i == len(unique_kids) - 1
             connector = "|-- " if not is_last else "'-- "
             self._ensure_space(5)
             self._pdf.set_font("Courier", "", 7.5)
             self._pdf.set_text_color(*_MUTED)
             self._pdf.set_x(15 + depth * 4)
             self._pdf.cell(self._content_w - depth * 4, 3.5, self._safe(f"{connector}{name} ({file})"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-            self._render_tree_children(child_id, children, fn_info, visited, depth + 1, max_depth)
+            # Recurse into subtree only if not already expanded elsewhere
+            if child_id not in visited:
+                visited.add(child_id)
+                self._render_tree_children(child_id, children, fn_info, visited, depth + 1, max_depth)
 
     # ── 7. Project structure ───────────────────────────────────────────
 

@@ -41,7 +41,10 @@ from la_analyzer.analyzer.models import (
 )
 from la_analyzer.analyzer.notebook_scan import count_notebooks, scan_notebooks
 from la_analyzer.analyzer.porting_plan import generate_porting_plan
+from la_analyzer.analyzer.prompt_surface import scan_prompt_surfaces
 from la_analyzer.analyzer.secrets_scan import scan_secrets
+from la_analyzer.analyzer.state_flow import scan_state_flow
+from la_analyzer.analyzer.tool_registration import scan_tool_registrations
 from la_analyzer.utils import discover_files
 
 
@@ -117,6 +120,15 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
     }
     description_report = scan_description(workspace_dir, py_files, entrypoint_files)
 
+    # ── Prompt surface scan ──────────────────────────────────────────────
+    prompt_surface_report = scan_prompt_surfaces(workspace_dir, py_files)
+
+    # ── Tool registration scan ───────────────────────────────────────────
+    tool_registration_report = scan_tool_registrations(workspace_dir, py_files)
+
+    # ── State flow scan ──────────────────────────────────────────────────
+    state_flow_report = scan_state_flow(workspace_dir, py_files)
+
     # ── Manifest ────────────────────────────────────────────────────────
     manifest = generate_manifest(
         workspace_dir, detection, io_report, egress_report, secrets_report
@@ -135,6 +147,9 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
     deps_path = _write_json("deps_report.json", deps_report)
     porting_path = _write_json("porting_plan.json", porting_plan)
     description_path = _write_json("description_report.json", description_report)
+    prompt_surface_path = _write_json("prompt_surface_report.json", prompt_surface_report)
+    tool_registration_path = _write_json("tool_registration_report.json", tool_registration_report)
+    state_flow_path = _write_json("state_flow_report.json", state_flow_report)
 
     manifest_path = str(out_dir / "livingapps.yaml")
     (out_dir / "livingapps.yaml").write_text(
@@ -149,6 +164,9 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
         deps_report_path=deps_path,
         porting_plan_path=porting_path,
         description_report_path=description_path,
+        prompt_surface_report_path=prompt_surface_path,
+        tool_registration_report_path=tool_registration_path,
+        state_flow_report_path=state_flow_path,
         manifest_path=manifest_path,
         detection=detection,
         io=io_report,
@@ -157,6 +175,9 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
         deps=deps_report,
         porting_plan=porting_plan,
         description=description_report,
+        prompt_surface=prompt_surface_report,
+        tool_registration=tool_registration_report,
+        state_flow=state_flow_report,
     )
 
 

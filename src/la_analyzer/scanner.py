@@ -301,6 +301,33 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
         description="Prompt injection, overprivileged tools, credential exposure in agents",
     ))
 
+    # Prompt surface scanner
+    tools.append(ToolResult(
+        name="Prompt surface scanner",
+        version="built-in",
+        status="ran",
+        findings=len(result.analysis.prompt_surface.surfaces),
+        description="LLM prompt variable tracing, string constant detection",
+    ))
+
+    # Tool registration scanner
+    tools.append(ToolResult(
+        name="Tool registration scanner",
+        version="built-in",
+        status="ran",
+        findings=len(result.analysis.tool_registration.tools),
+        description="LLM-callable tool detection, capability classification",
+    ))
+
+    # State flow scanner
+    tools.append(ToolResult(
+        name="State flow scanner",
+        version="built-in",
+        status="ran",
+        findings=len(result.analysis.state_flow.node_flows),
+        description="Graph node state read/write tracking",
+    ))
+
     # Call graph + projection
     proj = result.projection
     proj_findings = 0

@@ -20,6 +20,27 @@ from la_analyzer.analyzer.models import (
 
 log = logging.getLogger(__name__)
 
+# Callback registration: method.attr -> index of the callable argument
+_CALLBACK_METHODS = {
+    "add_node": 1,      # LangGraph: graph.add_node("name", func)
+    "add_job": 0,       # APScheduler: scheduler.add_job(func, ...)
+    "on": 1,            # Event emitters: emitter.on("event", handler)
+    "register": 0,      # Generic: registry.register(handler)
+    "connect": 1,       # Django signals: signal.connect(handler)
+}
+
+# Free function calls that register callables
+_CALLBACK_FREE_FUNCS = {
+    "path": 1,          # Django: path("url/", view_func)
+    "re_path": 1,       # Django: re_path(r"^url/", view_func)
+}
+
+# Decorator attrs that register callables (extends _ROUTE_DECORATOR_ATTRS)
+_CALLBACK_DECORATOR_ATTRS = {
+    "task",             # Celery: @app.task / @celery.task
+    "on_event",         # Starlette: @app.on_event("startup")
+}
+
 
 def build_call_graph(
     workspace: Path,
@@ -105,7 +126,7 @@ def build_call_graph(
                 for dec in node.decorator_list:
                     dec_node = dec.func if isinstance(dec, ast.Call) and hasattr(dec, "func") else dec
                     if (isinstance(dec_node, ast.Attribute)
-                            and dec_node.attr in _ROUTE_DECORATOR_ATTRS):
+                            and dec_node.attr in _ROUTE_DECORATOR_ATTRS | _CALLBACK_DECORATOR_ATTRS):
                         callee_id = f"{rel}::{node.name}"
                         if callee_id in functions:
                             edges.append(CallEdge(caller=module_id, callee=callee_id))
@@ -113,14 +134,60 @@ def build_call_graph(
             if not isinstance(node, ast.Call):
                 continue
 
-            call_name = _extract_call_name(node)
-            if not call_name:
-                continue
+            # Callback registration: obj.add_node("name", func) or path("url", view)
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _CALLBACK_METHODS:
+                arg_idx = _CALLBACK_METHODS[node.func.attr]
+                if len(node.args) > arg_idx:
+                    arg = node.args[arg_idx]
+                    if isinstance(arg, ast.Name):
+                        target = _resolve_call(arg.id, rel, file_imports, name_to_fids, functions)
+                        if target:
+                            edges.append(CallEdge(caller=module_id, callee=target))
+            elif isinstance(node.func, ast.Name) and node.func.id in _CALLBACK_FREE_FUNCS:
+                arg_idx = _CALLBACK_FREE_FUNCS[node.func.id]
+                if len(node.args) > arg_idx:
+                    arg = node.args[arg_idx]
+                    if isinstance(arg, ast.Name):
+                        target = _resolve_call(arg.id, rel, file_imports, name_to_fids, functions)
+                        if target:
+                            edges.append(CallEdge(caller=module_id, callee=target))
 
             # Find which function this call is inside
             caller_id = _find_enclosing_function(rel, node.lineno, functions)
             if not caller_id:
                 caller_id = module_id
+
+            # Walk lambda bodies: extract calls inside lambdas and attribute
+            # them to the enclosing function.
+            # e.g. retry_with_backoff(lambda: llm.invoke(prompt)) — the
+            # llm.invoke() call is inside the lambda, invisible to ast.walk
+            # because ast.walk does visit Lambda children. But the call's
+            # lineno equals the lambda's lineno, so _find_enclosing_function
+            # already works. The issue is that _extract_call_name + _resolve
+            # only fires on ast.Call nodes found by ast.walk — and ast.walk
+            # DOES walk into lambdas. So actually the issue is that
+            # llm.invoke() extracts "invoke" which doesn't resolve to any
+            # project function. We need to surface these unresolved method
+            # calls too. But first: let's extract calls from lambda args
+            # explicitly so they get proper caller attribution.
+            for arg in node.args:
+                if isinstance(arg, ast.Lambda):
+                    for lnode in ast.walk(arg.body):
+                        if isinstance(lnode, ast.Call):
+                            lname = _extract_call_name(lnode)
+                            if lname:
+                                callee_id = _resolve_call(
+                                    lname, rel, file_imports,
+                                    name_to_fids, functions,
+                                )
+                                if callee_id:
+                                    edges.append(CallEdge(
+                                        caller=caller_id, callee=callee_id,
+                                    ))
+
+            call_name = _extract_call_name(node)
+            if not call_name:
+                continue
 
             # Resolve the callee
             callee_id = _resolve_call(
@@ -128,6 +195,17 @@ def build_call_graph(
             )
             if callee_id:
                 edges.append(CallEdge(caller=caller_id, callee=callee_id))
+
+    # Import-execution edges: importing a module runs its <module> code
+    for rel, file_imports in imports_map.items():
+        source_module = f"{rel}::<module>"
+        seen_targets: set[str] = set()
+        for target_ref in file_imports.values():
+            target_file = target_ref.split("::")[0]
+            if target_file not in seen_targets and target_file in file_trees:
+                seen_targets.add(target_file)
+                target_module = f"{target_file}::<module>"
+                edges.append(CallEdge(caller=source_module, callee=target_module))
 
     # Mark entrypoints
     entrypoint_ids = _identify_entrypoints(detection, functions, workspace)

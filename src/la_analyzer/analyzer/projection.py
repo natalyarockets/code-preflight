@@ -211,6 +211,45 @@ def _collect_effects(
                 detail=sf.name_hint or "",
             ))
 
+    # Prompt surfaces
+    for ps in analysis.prompt_surface.surfaces:
+        for ev in ps.evidence:
+            vars_str = ", ".join(v.name for v in ps.prompt_variables)
+            effects.append(ProjectedEffect(
+                source="prompt",
+                title=f"Prompt: {ps.llm_method}() with {len(ps.prompt_variables)} variable(s)",
+                severity="info",
+                file=ev.file, line=ev.line,
+                function_name=ev.function_name or ps.function,
+                detail=vars_str,
+            ))
+
+    # Tool registrations
+    for tool in analysis.tool_registration.tools:
+        for ev in tool.evidence:
+            cap_kinds = ", ".join(c.kind for c in tool.capabilities) if tool.capabilities else "compute"
+            effects.append(ProjectedEffect(
+                source="tool",
+                title=f"Tool: {tool.name} ({tool.registration})",
+                severity="info",
+                file=ev.file, line=ev.line,
+                function_name=ev.function_name or tool.name,
+                detail=f"capabilities: {cap_kinds}",
+            ))
+
+    # State flows
+    for nf in analysis.state_flow.node_flows:
+        reads = ", ".join(nf.reads[:5])
+        writes = ", ".join(nf.writes[:5])
+        effects.append(ProjectedEffect(
+            source="state",
+            title=f"State: {nf.function} reads [{reads}] writes [{writes}]",
+            severity="info",
+            file=nf.file, line=nf.line_start,
+            function_name=nf.function,
+            detail=f"reads: {reads}; writes: {writes}",
+        ))
+
     # Security findings
     if security:
         for f in security.findings:

@@ -271,6 +271,318 @@ def process(data):
         assert "process" in reachable_names
 
 
+def test_langgraph_add_node_reachable():
+    """graph.add_node("name", func) makes func reachable from <module>."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "nodes.py", '''
+def ask_for_aircraft_type(state):
+    return {"question": "What aircraft?"}
+
+def do_research(state):
+    return {"result": "research done"}
+
+def summarize(state):
+    return {"summary": "done"}
+''')
+        _write(ws, "graph.py", '''
+from langgraph.graph import StateGraph
+from nodes import ask_for_aircraft_type, do_research, summarize
+
+graph = StateGraph()
+graph.add_node("ask", ask_for_aircraft_type)
+graph.add_node("research", do_research)
+graph.add_node("summarize", summarize)
+app = graph.compile()
+''')
+        detection = DetectionReport(
+            entrypoint_candidates=[
+                EntrypointCandidate(
+                    kind="command", value="python graph.py", confidence=1.0,
+                    evidence=[Evidence(file="graph.py", line=1, snippet="graph")],
+                ),
+            ],
+        )
+        py_files = [ws / "graph.py", ws / "nodes.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        reachable = reachable_from("graph.py::<module>", graph)
+        reachable_names = set()
+        for fid in reachable:
+            for fn in graph.functions:
+                if fn.id == fid:
+                    reachable_names.add(fn.name)
+
+        assert "ask_for_aircraft_type" in reachable_names
+        assert "do_research" in reachable_names
+        assert "summarize" in reachable_names
+
+
+def test_celery_task_decorator_reachable():
+    """@app.task decorator makes the function reachable from <module>."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "tasks.py", '''
+from celery import Celery
+
+app = Celery("myapp")
+
+@app.task
+def send_email(to, subject):
+    pass
+
+@app.task()
+def process_report(report_id):
+    pass
+''')
+        detection = DetectionReport()
+        py_files = [ws / "tasks.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        module_edges = {e.callee for e in graph.edges if e.caller == "tasks.py::<module>"}
+        assert "tasks.py::send_email" in module_edges
+        assert "tasks.py::process_report" in module_edges
+
+
+def test_django_path_reachable():
+    """path("url/", view_func) makes view_func reachable from <module>."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "views.py", '''
+def index(request):
+    return "hello"
+
+def detail(request, pk):
+    return "detail"
+''')
+        _write(ws, "urls.py", '''
+from views import index, detail
+
+urlpatterns = [
+    path("", index),
+    path("detail/<int:pk>/", detail),
+]
+''')
+        detection = DetectionReport()
+        py_files = [ws / "urls.py", ws / "views.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        module_edges = {e.callee for e in graph.edges if e.caller == "urls.py::<module>"}
+        assert "views.py::index" in module_edges
+        assert "views.py::detail" in module_edges
+
+
+def test_event_on_handler_reachable():
+    """emitter.on("event", handler) makes handler reachable from <module>."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "app.py", '''
+def on_connect(data):
+    pass
+
+def on_message(data):
+    pass
+
+sio.on("connect", on_connect)
+sio.on("message", on_message)
+''')
+        detection = DetectionReport()
+        py_files = [ws / "app.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        module_edges = {e.callee for e in graph.edges if e.caller == "app.py::<module>"}
+        assert "app.py::on_connect" in module_edges
+        assert "app.py::on_message" in module_edges
+
+
+def test_callback_cross_file():
+    """graph.add_node("x", imported_func) resolves cross-file."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "handlers.py", '''
+def handle_query(state):
+    return {"answer": "42"}
+''')
+        _write(ws, "main.py", '''
+from handlers import handle_query
+
+graph.add_node("query", handle_query)
+''')
+        detection = DetectionReport()
+        py_files = [ws / "main.py", ws / "handlers.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        module_edges = {e.callee for e in graph.edges if e.caller == "main.py::<module>"}
+        assert "handlers.py::handle_query" in module_edges
+
+
+def test_import_execution_edges():
+    """Importing from a file creates <module> -> <module> edge (Python runs module code on import)."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "config.py", '''
+DB_URL = "sqlite:///app.db"
+''')
+        _write(ws, "helpers.py", '''
+def compute(x):
+    return x * 2
+''')
+        _write(ws, "main.py", '''
+from config import DB_URL
+from helpers import compute
+
+def run():
+    return compute(5)
+
+if __name__ == "__main__":
+    run()
+''')
+        detection = DetectionReport(
+            entrypoint_candidates=[
+                EntrypointCandidate(
+                    kind="command", value="python main.py", confidence=1.0,
+                    evidence=[Evidence(file="main.py", line=8, snippet="if __name__")],
+                ),
+            ],
+        )
+        py_files = [ws / "main.py", ws / "config.py", ws / "helpers.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        # main.py imports from config.py and helpers.py, so their <module> scopes are reachable
+        reachable = reachable_from("main.py::<module>", graph)
+        assert "config.py::<module>" in reachable
+        assert "helpers.py::<module>" in reachable
+
+
+def test_transitive_import_execution():
+    """Import chains propagate: A imports B imports C -> C's <module> reachable from A."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "deep.py", '''
+SECRET = "very_deep"
+''')
+        _write(ws, "middle.py", '''
+from deep import SECRET
+WRAPPED = f"[{SECRET}]"
+''')
+        _write(ws, "entry.py", '''
+from middle import WRAPPED
+
+def go():
+    print(WRAPPED)
+
+if __name__ == "__main__":
+    go()
+''')
+        detection = DetectionReport(
+            entrypoint_candidates=[
+                EntrypointCandidate(
+                    kind="command", value="python entry.py", confidence=1.0,
+                    evidence=[Evidence(file="entry.py", line=7, snippet="if __name__")],
+                ),
+            ],
+        )
+        py_files = [ws / "entry.py", ws / "middle.py", ws / "deep.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        reachable = reachable_from("entry.py::<module>", graph)
+        assert "middle.py::<module>" in reachable
+        assert "deep.py::<module>" in reachable
+
+
+def test_lambda_body_calls_attributed_to_enclosing():
+    """Calls inside lambda args are attributed to the enclosing function."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "utils.py", '''
+def retry_with_backoff(fn, retries=3):
+    for i in range(retries):
+        try:
+            return fn()
+        except Exception:
+            pass
+''')
+        _write(ws, "llm_client.py", '''
+def get_llm():
+    return "llm"
+''')
+        _write(ws, "app.py", '''
+from utils import retry_with_backoff
+from llm_client import get_llm
+
+def build_report(data):
+    llm = get_llm()
+    result = retry_with_backoff(lambda: process(data))
+    return result
+
+def process(data):
+    return data.upper()
+
+if __name__ == "__main__":
+    build_report("test")
+''')
+        detection = DetectionReport(
+            entrypoint_candidates=[
+                EntrypointCandidate(
+                    kind="command", value="python app.py", confidence=1.0,
+                    evidence=[Evidence(file="app.py", line=11, snippet="if __name__")],
+                ),
+            ],
+        )
+        py_files = [ws / "app.py", ws / "utils.py", ws / "llm_client.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        # build_report should have an edge to process() (inside the lambda)
+        build_report_edges = {
+            e.callee for e in graph.edges if e.caller == "app.py::build_report"
+        }
+        assert "app.py::process" in build_report_edges
+
+        # process should be reachable from entrypoint via build_report
+        reachable = reachable_from("app.py::<module>", graph)
+        reachable_names = set()
+        for fid in reachable:
+            for fn in graph.functions:
+                if fn.id == fid:
+                    reachable_names.add(fn.name)
+        assert "process" in reachable_names
+        assert "build_report" in reachable_names
+
+
+def test_lambda_cross_file_call():
+    """Calls inside lambdas resolve cross-file imports."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "remote.py", '''
+def do_work(x):
+    return x * 2
+''')
+        _write(ws, "main.py", '''
+from remote import do_work
+
+def run():
+    result = apply(lambda: do_work(42))
+    return result
+
+if __name__ == "__main__":
+    run()
+''')
+        detection = DetectionReport(
+            entrypoint_candidates=[
+                EntrypointCandidate(
+                    kind="command", value="python main.py", confidence=1.0,
+                    evidence=[Evidence(file="main.py", line=7, snippet="if __name__")],
+                ),
+            ],
+        )
+        py_files = [ws / "main.py", ws / "remote.py"]
+        graph = build_call_graph(ws, py_files, detection)
+
+        # run() should have an edge to do_work() via the lambda
+        run_edges = {e.callee for e in graph.edges if e.caller == "main.py::run"}
+        assert "remote.py::do_work" in run_edges
+
+
 def test_flask_decorator_route_handlers():
     """Flask @app.route decorated functions should also get edges."""
     with tempfile.TemporaryDirectory() as d:

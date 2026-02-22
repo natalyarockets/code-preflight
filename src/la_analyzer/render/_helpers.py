@@ -141,6 +141,29 @@ def executive_summary(result: ScanResult) -> list[str]:
                 f"PII fields ({', '.join(fields)}) flow to {', '.join(sinks)}."
             )
 
+    # LLM prompts with variable content
+    if a.prompt_surface.surfaces:
+        count = len(a.prompt_surface.surfaces)
+        all_vars = sorted({v.name for s in a.prompt_surface.surfaces for v in s.prompt_variables})
+        if all_vars:
+            vars_str = ", ".join(all_vars[:5])
+            if len(all_vars) > 5:
+                vars_str += f" +{len(all_vars) - 5} more"
+            bullets.append(f"{count} LLM prompt site(s) inject runtime data ({vars_str}).")
+        else:
+            bullets.append(f"{count} LLM prompt site(s) detected.")
+
+    # Registered tools
+    if a.tool_registration.tools:
+        count = len(a.tool_registration.tools)
+        dangerous = [t for t in a.tool_registration.tools
+                     if any(c.kind in ("subprocess", "network") for c in t.capabilities)]
+        if dangerous:
+            names = ", ".join(t.name for t in dangerous[:3])
+            bullets.append(f"{count} LLM-callable tool(s) registered; {len(dangerous)} with elevated capabilities ({names}).")
+        else:
+            bullets.append(f"{count} LLM-callable tool(s) registered.")
+
     # Secrets in repo
     if a.secrets.findings:
         count = len(a.secrets.findings)

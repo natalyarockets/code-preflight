@@ -202,6 +202,77 @@ class DescriptionReport(BaseModel):
     argparse_descriptions: list[str] = Field(default_factory=list)
 
 
+# ── G2) Prompt Surface ─────────────────────────────────────────────────
+
+
+class PromptVariable(BaseModel):
+    name: str                     # "aircraft_overview"
+    origin: str = ""              # "f-string", "format", "concat", "param"
+
+
+class PromptSurface(BaseModel):
+    function: str                 # "build_fault_tree"
+    file: str                     # "graph.py"
+    line: int                     # line of the LLM call
+    llm_method: str               # "invoke", "create", "completion"
+    prompt_variables: list[PromptVariable] = Field(default_factory=list)
+    string_constants: list[str] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+
+
+class PromptSurfaceReport(BaseModel):
+    surfaces: list[PromptSurface] = Field(default_factory=list)
+
+
+# ── G3) Tool Registration ────────────────────────────────────────────────
+
+
+class ToolCapability(BaseModel):
+    kind: str          # "network", "file_read", "file_write", "database", "subprocess", "compute"
+    detail: str = ""
+    line: int = 0
+
+
+class RegisteredTool(BaseModel):
+    name: str
+    file: str
+    line: int
+    registration: str  # "@tool", "bind_tools", "tools_schema"
+    docstring: str = ""
+    parameters: list[str] = Field(default_factory=list)
+    capabilities: list[ToolCapability] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+
+
+class ToolRegistrationReport(BaseModel):
+    tools: list[RegisteredTool] = Field(default_factory=list)
+
+
+# ── G4) State Flow ───────────────────────────────────────────────────────
+
+
+class StateAccess(BaseModel):
+    key: str
+    access: str    # "read" or "write"
+    line: int
+
+
+class NodeStateFlow(BaseModel):
+    function: str
+    file: str
+    line_start: int
+    line_end: int
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
+    accesses: list[StateAccess] = Field(default_factory=list)
+
+
+class StateFlowReport(BaseModel):
+    state_class: str = ""
+    state_keys: list[str] = Field(default_factory=list)
+    node_flows: list[NodeStateFlow] = Field(default_factory=list)
+
+
 # ── Top-level result ───────────────────────────────────────────────────────
 
 class AnalysisResult(BaseModel):
@@ -212,6 +283,9 @@ class AnalysisResult(BaseModel):
     deps_report_path: str = ""
     porting_plan_path: str = ""
     description_report_path: str = ""
+    prompt_surface_report_path: str = ""
+    tool_registration_report_path: str = ""
+    state_flow_report_path: str = ""
     manifest_path: str = ""
 
     detection: DetectionReport = Field(default_factory=DetectionReport)
@@ -221,6 +295,9 @@ class AnalysisResult(BaseModel):
     deps: DepsReport = Field(default_factory=DepsReport)
     porting_plan: PortingPlan = Field(default_factory=PortingPlan)
     description: DescriptionReport = Field(default_factory=DescriptionReport)
+    prompt_surface: PromptSurfaceReport = Field(default_factory=PromptSurfaceReport)
+    tool_registration: ToolRegistrationReport = Field(default_factory=ToolRegistrationReport)
+    state_flow: StateFlowReport = Field(default_factory=StateFlowReport)
 
 
 # ── H) Call Graph ─────────────────────────────────────────────────────────
