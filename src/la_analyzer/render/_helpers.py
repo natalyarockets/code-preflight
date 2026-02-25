@@ -49,6 +49,14 @@ def top_risks(result: ScanResult, max_risks: int = 5) -> list[str]:
                 prio = sev_order(af.severity)
                 risks.append((prio, f"{af.title} at {af.file}:{af.line}"))
 
+    # IR graph findings
+    if hasattr(s, "ir_findings"):
+        for f in s.ir_findings:
+            if f.severity in ("critical", "high"):
+                prio = sev_order(f.severity)
+                loc = f" at {f.evidence[0].file}:{f.evidence[0].line}" if f.evidence else ""
+                risks.append((prio, f"{f.title}{loc}"))
+
     risks.sort(key=lambda x: x[0])
     return [r[1] for r in risks[:max_risks]]
 
@@ -106,6 +114,8 @@ def executive_summary(result: ScanResult) -> list[str]:
         llm_libs = [c for c in egress if c.kind == "llm_sdk"]
         http_libs = [c for c in egress if c.kind == "http"]
         db_libs = [c for c in egress if c.kind in ("database", "baas")]
+        obs_libs = [c for c in egress if c.kind == "observability"]
+        email_libs = [c for c in egress if c.kind == "email"]
 
         if llm_libs:
             names = sorted({c.library for c in llm_libs})
@@ -123,6 +133,16 @@ def executive_summary(result: ScanResult) -> list[str]:
         if db_libs:
             names = sorted({c.library for c in db_libs})
             bullets.append(f"Connects to external data store via {', '.join(names)}.")
+
+        if obs_libs:
+            names = sorted({c.library for c in obs_libs})
+            domains = sorted({d for c in obs_libs for d in c.domains if d})
+            dest = f" ({', '.join(domains)})" if domains else ""
+            bullets.append(f"Sends telemetry/traces to observability service: {', '.join(names)}{dest}.")
+
+        if email_libs:
+            names = sorted({c.library for c in email_libs})
+            bullets.append(f"Sends email via {', '.join(names)}.")
 
     # Credential exposure
     if s and s.credential_leak_risks:

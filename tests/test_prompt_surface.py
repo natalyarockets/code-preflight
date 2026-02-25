@@ -186,3 +186,82 @@ def process(data):
 ''')
         report = scan_prompt_surfaces(ws, [f])
         assert len(report.surfaces) == 0
+
+
+def test_scope_aware_constants_local_not_module():
+    """Local function assignments should NOT be confused with module-level constants."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "agent.py", '''
+from langchain_openai import ChatOpenAI
+llm = ChatOpenAI()
+
+MODULE_CONST = "This is a module-level constant."
+
+def process(user_input):
+    # LOCAL assignment — should be treated as a variable, not a constant
+    local_prefix = "Processing: "
+    prompt = f"{local_prefix}{user_input}"
+    return llm.invoke(prompt)
+''')
+        report = scan_prompt_surfaces(ws, [f])
+        assert len(report.surfaces) >= 1
+        s = report.surfaces[0]
+        # MODULE_CONST should be in string_constants
+        # local_prefix is local — may appear as a var or not, but not as string_constant
+        # user_input should be in prompt_variables
+        var_names = {v.name for v in s.prompt_variables}
+        assert "user_input" in var_names
+        # local_prefix should NOT appear as a string constant (it's local, not module-level)
+        assert "local_prefix" not in s.string_constants
+
+
+def test_worklist_depth_5_levels():
+    """Variable chain 5+ levels deep should resolve correctly with worklist."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "agent.py", '''
+from langchain_openai import ChatOpenAI
+llm = ChatOpenAI()
+
+def process(raw_input):
+    v1 = raw_input
+    v2 = v1
+    v3 = v2
+    v4 = v3
+    v5 = v4
+    result = llm.invoke(v5)
+    return result
+''')
+        report = scan_prompt_surfaces(ws, [f])
+        assert len(report.surfaces) >= 1
+        # Should trace back through 5 levels to find raw_input
+        var_names = {v.name for v in report.surfaces[0].prompt_variables}
+        assert "raw_input" in var_names
+
+
+def test_graph_app_ainvoke_not_flagged():
+    """graph_app.ainvoke(state) should NOT be flagged as an LLM call site."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "workflow.py", '''
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph
+
+llm = ChatOpenAI()
+
+class State(dict):
+    pass
+
+graph = StateGraph(State)
+graph_app = graph.compile()
+
+async def run_workflow(user_input):
+    # This is a graph invocation — NOT an LLM call
+    result = await graph_app.ainvoke({"input": user_input})
+    return result
+''')
+        report = scan_prompt_surfaces(ws, [f])
+        # Should not have any surface for graph_app.ainvoke
+        graph_surfaces = [s for s in report.surfaces if "ainvoke" in s.llm_method.lower()]
+        assert len(graph_surfaces) == 0

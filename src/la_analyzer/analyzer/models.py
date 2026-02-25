@@ -96,7 +96,8 @@ class IOReport(BaseModel):
 # ── C) egress_report.json ──────────────────────────────────────────────────
 
 class OutboundCall(BaseModel):
-    kind: Literal["llm_sdk", "http", "database", "cloud", "baas", "webhook", "unknown"]
+    kind: Literal["llm_sdk", "http", "database", "cloud", "baas",
+                  "observability", "email", "webhook", "unknown"]
     library: str = "unknown"
     domains: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)

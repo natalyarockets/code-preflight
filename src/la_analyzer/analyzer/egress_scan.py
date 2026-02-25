@@ -47,6 +47,11 @@ _TRACKED_LIBS: dict[str, str] = {
     # BaaS
     "supabase": "baas",
     "firebase_admin": "baas",
+    # Observability / telemetry
+    "sentry_sdk": "observability",
+    "langsmith": "observability",
+    # Email
+    "smtplib": "email",
 }
 
 # SDK constructors that are high-confidence egress signals even without a method call
@@ -61,6 +66,8 @@ _SDK_CONSTRUCTORS: dict[str, str] = {
     "GenerativeModel": "google",
     "Groq": "groq",
     "Cohere": "cohere",
+    "SMTP": "smtplib",
+    "SMTP_SSL": "smtplib",
 }
 
 # Well-known default domains for SDK libraries.
@@ -84,6 +91,9 @@ _DEFAULT_DOMAINS: dict[str, list[str]] = {
     "asyncpg": ["(configured host)"],
     "pymongo": ["(configured host)"],
     "redis": ["(configured host)"],
+    "sentry_sdk": ["sentry.io"],
+    "langsmith": ["api.smith.langchain.com"],
+    "smtplib": ["(configured smtp host)"],
 }
 
 # Regex for URLs/domains in string literals
@@ -283,6 +293,29 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                             ))
                             break
 
+            # sentry_sdk.init(...) — implicit observability egress
+            if attr == "init" and isinstance(node.func, ast.Attribute):
+                receiver = _get_receiver_root(node.func.value)
+                if receiver in ("sentry_sdk", "sentry") and "sentry_sdk" in file_imports:
+                    calls.append(OutboundCall(
+                        kind="observability", library="sentry_sdk",
+                        evidence=[ev], confidence=0.95,
+                    ))
+
+            # langsmith traceable / client usage
+            if attr in ("Client", "traceable") and "langsmith" in file_imports:
+                calls.append(OutboundCall(
+                    kind="observability", library="langsmith",
+                    evidence=[ev], confidence=0.85,
+                ))
+
+            # smtplib send methods
+            if attr in ("sendmail", "send_message", "send") and "smtplib" in file_imports:
+                calls.append(OutboundCall(
+                    kind="email", library="smtplib",
+                    evidence=[ev], confidence=0.9,
+                ))
+
             # litellm.completion() / cohere.chat() / replicate.run() — module-level calls
             if attr in ("completion", "acompletion") and "litellm" in file_imports:
                 calls.append(OutboundCall(
@@ -355,6 +388,32 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                             evidence=[ev], confidence=0.7,
                         ))
                         break
+
+        # Detect @traceable decorator from langsmith as implicit observability egress
+        if "langsmith" in file_imports:
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for dec in node.decorator_list:
+                        dec_name = None
+                        if isinstance(dec, ast.Name):
+                            dec_name = dec.id
+                        elif isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name):
+                            dec_name = dec.func.id
+                        elif isinstance(dec, ast.Attribute):
+                            dec_name = dec.attr
+                        elif isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute):
+                            dec_name = dec.func.attr
+                        if dec_name == "traceable":
+                            dec_line = dec.lineno if hasattr(dec, "lineno") else node.lineno
+                            ev = Evidence(
+                                file=rel, line=dec_line,
+                                snippet=_snippet(source, dec_line),
+                            )
+                            calls.append(OutboundCall(
+                                kind="observability", library="langsmith",
+                                evidence=[ev], confidence=0.9,
+                            ))
+                            break
 
         # Regex scan for URLs and model names
         _regex_scan(source, rel, calls, models_found)

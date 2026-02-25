@@ -63,11 +63,14 @@ def scan_prompt_surfaces(
         if not _has_llm_imports(tree):
             continue
 
-        # Collect string constant assignments: NAME = "literal"
+        # Collect string constant assignments: NAME = "literal" (module-level only)
         str_constants = _collect_string_constants(tree)
 
         # Find all function bodies (for scoping variable lookups)
         func_bodies = _collect_function_scopes(tree)
+
+        # Build var→capability map to detect GRAPH_RUNTIME receivers
+        graph_runtime_vars = _collect_graph_runtime_vars(tree)
 
         # Walk the AST looking for LLM call sites
         for node in ast.walk(tree):
@@ -76,6 +79,10 @@ def scan_prompt_surfaces(
 
             method = _get_llm_method(node)
             if not method:
+                continue
+
+            # GRAPH_RUNTIME guard: skip ainvoke/invoke on graph app vars
+            if method in ("invoke", "ainvoke") and _is_graph_runtime_receiver(node, graph_runtime_vars):
                 continue
 
             # Find enclosing function
@@ -137,9 +144,13 @@ def _has_llm_imports(tree: ast.AST) -> bool:
 
 
 def _collect_string_constants(tree: ast.AST) -> dict[str, str]:
-    """Collect module-level string constant assignments: NAME = 'literal'."""
+    """Collect module-level string constant assignments: NAME = 'literal'.
+
+    Only walks direct children of the module node (not into function bodies)
+    to avoid confusing local assignments with module-level constants.
+    """
     constants: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             if (isinstance(target, ast.Name)
@@ -244,55 +255,81 @@ def _trace_expression(
     out_constants: list[str],
     depth: int,
 ) -> None:
-    """Recursively trace an expression to find variable references and constants."""
-    if depth > 3:
-        return
+    """Trace an expression using a worklist to find variable references and constants.
 
-    if isinstance(expr, ast.JoinedStr):
-        # f-string: extract FormattedValue variable names
-        for val in expr.values:
-            if isinstance(val, ast.FormattedValue):
-                _trace_expression(val.value, scope, str_constants,
-                                  out_vars, out_constants, depth + 1)
-    elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-        # String concatenation: a + b + "..."
-        _trace_expression(expr.left, scope, str_constants,
-                          out_vars, out_constants, depth + 1)
-        _trace_expression(expr.right, scope, str_constants,
-                          out_vars, out_constants, depth + 1)
-    elif isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
-        # "...".format(key=val, ...) or "...".format(val, ...)
-        _trace_expression(expr.func.value, scope, str_constants,
-                          out_vars, out_constants, depth + 1)
-        for kw in expr.keywords:
-            if kw.arg:
-                out_vars.append(PromptVariable(name=kw.arg, origin="format"))
-        for arg in expr.args:
-            if isinstance(arg, ast.Name):
-                out_vars.append(PromptVariable(name=arg.id, origin="format"))
-    elif isinstance(expr, ast.Name):
-        name = expr.id
-        # Check if it resolves to a string constant
-        if name in str_constants:
-            out_constants.append(name)
-        elif name in scope:
-            # Recurse into the assigned expression
-            _trace_expression(scope[name], scope, str_constants,
-                              out_vars, out_constants, depth + 1)
-        else:
-            out_vars.append(PromptVariable(name=name, origin="param"))
-    elif isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-        # Inline string literal -- not a named constant, skip
-        pass
-    elif isinstance(expr, ast.List):
-        for elt in expr.elts:
-            _trace_expression(elt, scope, str_constants,
-                              out_vars, out_constants, depth + 1)
-    elif isinstance(expr, ast.Dict):
-        for v in expr.values:
-            if v:
-                _trace_expression(v, scope, str_constants,
-                                  out_vars, out_constants, depth + 1)
+    The depth parameter is kept for API compatibility but is ignored — the worklist
+    uses a node_budget and visited_names set for cycle prevention instead.
+    """
+    _trace_worklist(expr, scope, str_constants, out_vars, out_constants, node_budget=50)
+
+
+def _trace_worklist(
+    start_expr: ast.expr,
+    scope: dict[str, ast.expr],
+    str_constants: dict[str, str],
+    out_vars: list[PromptVariable],
+    out_constants: list[str],
+    *,
+    node_budget: int = 50,
+) -> None:
+    """Worklist-based expression tracer. Replaces the depth-limited recursive version."""
+    stack: list[tuple[ast.expr, str]] = [(start_expr, "param")]  # (expr, origin_hint)
+    visited_names: set[str] = set()
+    budget = node_budget
+
+    while stack and budget > 0:
+        budget -= 1
+        expr, origin = stack.pop()
+
+        if isinstance(expr, ast.JoinedStr):
+            # f-string: push all FormattedValue children
+            for val in expr.values:
+                if isinstance(val, ast.FormattedValue):
+                    stack.append((val.value, "f-string"))
+
+        elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            stack.append((expr.left, origin))
+            stack.append((expr.right, origin))
+
+        elif (isinstance(expr, ast.Call)
+              and isinstance(expr.func, ast.Attribute)
+              and expr.func.attr == "format"):
+            stack.append((expr.func.value, origin))
+            for kw in expr.keywords:
+                if kw.arg:
+                    out_vars.append(PromptVariable(name=kw.arg, origin="format"))
+            for arg in expr.args:
+                if isinstance(arg, ast.Name):
+                    out_vars.append(PromptVariable(name=arg.id, origin="format"))
+
+        elif isinstance(expr, ast.Name):
+            name = expr.id
+            if name in visited_names:
+                continue
+            visited_names.add(name)
+
+            if name in str_constants:
+                out_constants.append(name)
+            elif name in scope:
+                stack.append((scope[name], origin))
+            else:
+                out_vars.append(PromptVariable(name=name, origin=origin))
+
+        elif isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            pass  # Inline string literal — not a named variable, skip
+
+        elif isinstance(expr, ast.List):
+            for elt in expr.elts:
+                stack.append((elt, origin))
+
+        elif isinstance(expr, ast.Tuple):
+            for elt in expr.elts:
+                stack.append((elt, origin))
+
+        elif isinstance(expr, ast.Dict):
+            for v in expr.values:
+                if v:
+                    stack.append((v, origin))
 
 
 def _check_lambda_args(
@@ -314,6 +351,69 @@ def _check_lambda_args(
                         for expr in prompt_exprs:
                             _trace_expression(expr, scope, str_constants,
                                               out_vars, out_constants, depth=0)
+
+
+def _collect_graph_runtime_vars(tree: ast.AST) -> set[str]:
+    """Collect variable names that hold LangGraph StateGraph/CompiledStateGraph instances."""
+    _GRAPH_RUNTIME_CONSTRUCTORS = {
+        "StateGraph", "CompiledStateGraph", "MessageGraph",
+        "Graph",  # generic langgraph graph
+    }
+    graph_vars: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            call_name = None
+            if isinstance(node.value.func, ast.Name):
+                call_name = node.value.func.id
+            elif isinstance(node.value.func, ast.Attribute):
+                call_name = node.value.func.attr
+            if call_name in _GRAPH_RUNTIME_CONSTRUCTORS:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        graph_vars.add(target.id)
+        # Also: compiled = graph.compile(...)
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            if (isinstance(node.value.func, ast.Attribute)
+                    and node.value.func.attr == "compile"):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        graph_vars.add(target.id)
+
+    return graph_vars
+
+
+def _is_graph_runtime_receiver(call: ast.Call, graph_runtime_vars: set[str]) -> bool:
+    """Return True if the call receiver is a known graph runtime variable."""
+    if not isinstance(call.func, ast.Attribute):
+        return False
+
+    receiver = call.func.value
+    name = None
+    if isinstance(receiver, ast.Name):
+        name = receiver.id
+    elif isinstance(receiver, ast.Attribute):
+        name = receiver.attr
+
+    if name is None:
+        return False
+
+    # Check against explicit graph vars
+    if name in graph_runtime_vars:
+        return True
+
+    # Heuristic: variable name contains graph/workflow/app but not llm/model
+    name_lower = name.lower()
+    graph_hints = {"graph", "workflow", "compiled", "agent_graph", "state_graph"}
+    llm_hints = {"llm", "model", "client", "chat"}
+    for h in graph_hints:
+        if h in name_lower:
+            return True
+    for h in llm_hints:
+        if h in name_lower:
+            return False
+
+    return False
 
 
 def _dedupe_vars(variables: list[PromptVariable]) -> list[PromptVariable]:

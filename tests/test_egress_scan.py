@@ -258,3 +258,57 @@ def add(a, b):
         report = scan_egress(ws, [f])
         assert len(report.outbound_calls) == 0
         assert report.suggested_gateway_needs.needs_llm_gateway is False
+
+
+def test_detects_sentry_sdk_observability():
+    """sentry_sdk.init() should produce an observability egress call."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "setup.py", '''
+import sentry_sdk
+
+sentry_sdk.init(
+    dsn="https://key@sentry.io/project",
+    traces_sample_rate=1.0,
+)
+''')
+        report = scan_egress(ws, [f])
+        obs = [c for c in report.outbound_calls if c.kind == "observability"]
+        assert len(obs) >= 1
+        sentry_obs = [c for c in obs if c.library == "sentry_sdk"]
+        assert len(sentry_obs) >= 1
+
+
+def test_detects_langsmith_observability():
+    """langsmith import with @traceable decorator should produce observability egress."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "tracing.py", '''
+from langsmith import traceable
+
+@traceable
+def my_llm_call(prompt):
+    return "response"
+''')
+        report = scan_egress(ws, [f])
+        obs = [c for c in report.outbound_calls if c.kind == "observability"]
+        assert len(obs) >= 1
+        langsmith_obs = [c for c in obs if c.library == "langsmith"]
+        assert len(langsmith_obs) >= 1
+
+
+def test_detects_smtplib_email():
+    """smtplib import with sendmail should produce email egress."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        f = _write_py(ws, "mailer.py", '''
+import smtplib
+
+with smtplib.SMTP("smtp.example.com", 587) as server:
+    server.sendmail("from@example.com", "to@example.com", "Hello!")
+''')
+        report = scan_egress(ws, [f])
+        email = [c for c in report.outbound_calls if c.kind == "email"]
+        assert len(email) >= 1
+        smtp = [c for c in email if c.library == "smtplib"]
+        assert len(smtp) >= 1

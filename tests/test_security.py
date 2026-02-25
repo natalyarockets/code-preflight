@@ -929,3 +929,91 @@ requests.post("https://api.example.com/upload", json={"payload": api_key})
         http_risks = [r for r in risks if r.leak_target == "http_request"]
         assert len(http_risks) >= 1
         assert all(r.severity == "high" for r in http_risks)
+
+
+# -- Gate Fix: Secrets outside call graph affect gate -------------------------
+
+
+def test_gate_dotenv_finding_triggers_review():
+    """A dotenv_file finding in analysis.secrets should set requires_review=True."""
+    from unittest.mock import MagicMock
+    from la_analyzer.analyzer.models import SecretsReport, SecretFinding, Evidence
+
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        # Clean code — no security findings on its own
+        _write(ws, "app.py", 'x = 1\n')
+        # Simulate analysis_result with dotenv finding
+        analysis_result = MagicMock()
+        analysis_result.secrets = SecretsReport(findings=[
+            SecretFinding(
+                kind="dotenv_file",
+                value_redacted="***",
+                evidence=[Evidence(file=".env", line=1, snippet="API_KEY=sk-...")],
+                confidence=0.95,
+            )
+        ])
+        analysis_result.egress = MagicMock()
+        analysis_result.egress.outbound_calls = []
+        analysis_result.io = MagicMock()
+        analysis_result.io.hardcoded_paths = []
+
+        report = run_security_review(
+            workspace_dir=ws,
+            analysis_result=analysis_result,
+        )
+        # Gate should be triggered by the secret
+        assert report.requires_review is True
+
+
+def test_gate_hardcoded_key_triggers_review():
+    """A hardcoded_key finding in analysis.secrets should set requires_review=True."""
+    from unittest.mock import MagicMock
+    from la_analyzer.analyzer.models import SecretsReport, SecretFinding, Evidence
+
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        _write(ws, "app.py", 'x = 1\n')
+
+        analysis_result = MagicMock()
+        analysis_result.secrets = SecretsReport(findings=[
+            SecretFinding(
+                kind="hardcoded_key",
+                name_hint="OPENAI_API_KEY",
+                value_redacted="sk-***",
+                confidence=0.9,
+                evidence=[Evidence(file="app.py", line=1, snippet="key = 'sk-xxx'")],
+            )
+        ])
+        analysis_result.egress = MagicMock()
+        analysis_result.egress.outbound_calls = []
+        analysis_result.io = MagicMock()
+        analysis_result.io.hardcoded_paths = []
+
+        report = run_security_review(
+            workspace_dir=ws,
+            analysis_result=analysis_result,
+        )
+        assert report.requires_review is True
+
+
+def test_ir_findings_in_security_report():
+    """IR findings should be present in SecurityReport.ir_findings."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        # FastAPI route with no auth dependency
+        _write(ws, "routes.py", '''
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/data")
+async def get_data():
+    return {"data": "public"}
+''')
+        report = run_security_review(workspace_dir=ws)
+        # IR findings should be populated
+        assert hasattr(report, "ir_findings")
+        # Route should be detected as unauthenticated
+        auth_findings = [f for f in report.ir_findings if f.category == "auth"]
+        assert len(auth_findings) >= 1

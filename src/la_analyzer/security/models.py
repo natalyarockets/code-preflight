@@ -55,6 +55,8 @@ class SecurityReport(BaseModel):
     data_classifications: list[DataClassification] = Field(default_factory=list)
     data_flow_risks: list[DataFlowRisk] = Field(default_factory=list)
     credential_leak_risks: list[CredentialLeakRisk] = Field(default_factory=list)
+    # IR graph findings (effect graph queries)
+    ir_findings: list[SecurityFinding] = Field(default_factory=list)
     # Aggregated severity counts
     critical_count: int = 0
     high_count: int = 0

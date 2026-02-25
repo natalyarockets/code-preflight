@@ -6,7 +6,7 @@ Built for people building internal tools with AI coding assistants (Cursor, Clau
 
 Three-phase pipeline:
 1. **Structural analysis** -- what the code does (entrypoints, I/O, egress, secrets, deps)
-2. **Security review** -- what could go wrong (injection, data flow, credential leaks, agent risks)
+2. **Security review** -- what could go wrong (injection, data flow, credential leaks, agent risks, effect graph queries)
 3. **Effect projection** -- what actually runs (per-entrypoint reachability, separating real effects from unused code)
 
 ## Install
@@ -45,7 +45,7 @@ la-scan ./myproject -v                       # Verbose logging
 The report opens with **"If You Deploy This As-Is"**: a plain-English summary of what happens if you ship the code right now. Then:
 
 - **Security gate** -- PASS, REVIEW REQUIRED, or BLOCKED, with severity counts and top risks
-- **Trust boundaries** -- every external service your code talks to, any credentials at risk of leaking, PII flowing to places it shouldn't, hardcoded secrets
+- **Trust boundaries** -- every external service your code talks to (including observability and email), any credentials at risk of leaking, PII flowing to places it shouldn't, hardcoded secrets
 - **Entrypoint effect matrix** -- what each entrypoint reads, writes, sends, and exposes
 - **Security findings** -- detailed findings with severity, description, recommendation, and exact file/line
 - **Call graph** -- which functions call which, per entrypoint
@@ -116,11 +116,17 @@ $ la-scan examples/sample_batch_app
 
 **I/O and data flow.** Detects file reads (pandas, open()), file writes (CSV, JSON, Excel, PNG), argparse arguments, FastAPI request parameters, upload handlers, and response models. Flags hardcoded file paths.
 
-**External connections.** Catalogs outbound calls: LLM SDKs (OpenAI, Anthropic, Cohere, LangChain), HTTP clients (requests, httpx, aiohttp), databases (psycopg2, SQLAlchemy, pymongo, redis), cloud SDKs (boto3, supabase, firebase).
+**External connections.** Catalogs outbound calls: LLM SDKs (OpenAI, Anthropic, Cohere, LangChain), HTTP clients (requests, httpx, aiohttp), databases (psycopg2, SQLAlchemy, pymongo, redis), cloud SDKs (boto3, supabase, firebase), observability services (Sentry, LangSmith), and email (smtplib). Detects implicit egress from SDK initialization (e.g., `sentry_sdk.init()`) and decorator-based tracing (e.g., `@traceable`).
 
 **Secrets.** Finds hardcoded API keys, .env files, token patterns (sk-\*, AKIA\*, ghp\_\*), and suggests environment variable names.
 
 **Dependencies.** Reads requirements.txt, pyproject.toml, and environment.yml. Falls back to import scanning when no manifest exists.
+
+**LLM prompt surfaces.** Traces every LLM call site back through variable assignments, f-strings, string concatenation, and `.format()` to identify which runtime variables flow into prompts. Correctly excludes graph runtime calls (e.g., `graph_app.ainvoke()`) that are not LLM prompt sinks.
+
+**LangGraph state flow.** Maps which graph nodes read and write which state keys.
+
+**Tool registration.** Detects LLM-callable tools (`@tool`, `bind_tools`) and classifies their capabilities (network, file, subprocess, database).
 
 ### Phase 2: Security review
 
@@ -136,12 +142,23 @@ $ la-scan examples/sample_batch_app
 
 **Agent and skill scanning.** Template injection in prompt files, overprivileged tools in agent configs, MCP servers without guardrails, user input flowing into system messages.
 
-**Gate decision.** Produces PASS, REVIEW REQUIRED, or BLOCKED based on finding severity:
+**Effect graph scanner.** A semantic layer built on top of AST analysis. Rather than string-matching against hardcoded library lists, it builds a typed graph of capabilities, sources, sinks, and data flows, then runs queries over that graph. This catches:
+
+- **Prompt injection paths** -- user-controlled or header-controlled data flowing into any LLM prompt, traced through variable chains and f-strings
+- **Implicit egress** -- observability SDKs (Sentry, LangSmith) and email (smtplib) that ship data automatically on init or via decorators
+- **Unauthenticated routes** -- FastAPI route handlers with no `Depends()` auth guard
+- **SQL severity escalation** -- existing injection findings upgraded to HIGH when the source is user/header-controlled
+- **State overexposure** -- routes that return graph state directly to API clients
+- **False-positive suppression** -- `graph_app.ainvoke()` is correctly classified as a graph runtime call, not an LLM prompt sink
+
+The capability registry (`ir/capability_registry.py`) is data-only: adding support for a new SDK means adding one dict entry, with no changes to scanner logic.
+
+**Gate decision.** Produces PASS, REVIEW REQUIRED, or BLOCKED based on finding severity. Secrets found outside the active call graph (hardcoded keys, .env files) also contribute to the gate:
 
 | Gate | Condition |
 |---|---|
 | **PASS** | No critical or high findings |
-| **REVIEW REQUIRED** | High-severity findings present |
+| **REVIEW REQUIRED** | High-severity findings present (including secrets) |
 | **BLOCKED** | Critical findings present |
 
 ### Phase 3: Effect projection
@@ -165,7 +182,7 @@ $ la-scan examples/sample_batch_app
 | `deps_report.json` | Dependencies and sources |
 | `porting_plan.json` | Required and optional changes |
 | `description_report.json` | README content, module docstrings |
-| `security_report.json` | All findings, severity counts, gate decision |
+| `security_report.json` | All findings (including IR graph findings), severity counts, gate decision |
 | `livingapps.yaml` | Generated app manifest |
 
 `la-scan -f json` outputs a single JSON document combining `analysis`, `security`, and `projection`.
@@ -184,14 +201,18 @@ result.analysis.detection.entrypoint_candidates
 result.analysis.io.inputs
 result.analysis.io.outputs
 result.analysis.io.api_routes
-result.analysis.egress.outbound_calls
+result.analysis.egress.outbound_calls        # includes observability, email kinds
 result.analysis.secrets.findings
 result.analysis.deps.dependencies
+result.analysis.prompt_surface.surfaces      # LLM call sites + traced variables
+result.analysis.tool_registration.tools      # LLM-callable tools
+result.analysis.state_flow.node_flows        # LangGraph state reads/writes
 
 # Phase 2: security review
 result.security.deploy_blocked        # True if critical findings
-result.security.requires_review       # True if high findings
-result.security.findings              # code injection, resource abuse, vulns
+result.security.requires_review       # True if high findings (incl. secrets)
+result.security.findings              # code injection, resource abuse, vulns, IR findings
+result.security.ir_findings           # effect graph query results only
 result.security.data_classifications  # PII, financial, health, credential
 result.security.data_flow_risks       # source -> sink traces
 result.security.credential_leak_risks
@@ -210,7 +231,8 @@ Run subsystems independently:
 from pathlib import Path
 from la_analyzer.analyzer.service import analyze_repo
 from la_analyzer.security import run_security_review
-from la_analyzer.analyzer.projection import build_projection
+from la_analyzer.ir import build_effect_graph
+from la_analyzer.ir.queries import run_all_queries
 
 analysis = analyze_repo(Path("myproject"), Path("/tmp/output"))
 
@@ -218,6 +240,11 @@ security = run_security_review(
     workspace_dir=Path("myproject"),
     analysis_result=analysis,
 )
+
+# Use the effect graph directly
+py_files = list(Path("myproject").rglob("*.py"))
+graph = build_effect_graph(Path("myproject"), py_files)
+ir_findings = run_all_queries(graph)
 ```
 
 ## Development
@@ -227,11 +254,15 @@ pip install -e ".[dev]"
 pytest
 ```
 
-144 tests across 10 test files. Runs in under a second.
+283 tests across 15 test files. Runs in under 3 seconds.
 
 ## How it works
 
-Pure static analysis. No code is executed. The scanner walks Python files, parses them into ASTs, and applies pattern-matching to extract structure and detect risks. The call graph resolves cross-file imports and computes reachability to separate real effects from unused code. Agent/skill files (.md, .yaml, .json) are scanned with format-specific heuristics. Files over 2MB and directories like .git, venv, and node_modules are skipped.
+Pure static analysis. No code is executed. The scanner walks Python files, parses them into ASTs, and applies pattern-matching to extract structure and detect risks.
+
+The **effect graph** adds a semantic layer: a Python frontend runs multi-pass abstract interpretation over each file, tracking what capabilities each variable holds (LLM client, graph runtime, telemetry SDK, mailer, etc.) and what trust level each data source carries (user-controlled, header-controlled, external-untrusted, operator-controlled). These facts are emitted as typed nodes and edges into a graph, which is then queried to find security-relevant paths.
+
+The call graph resolves cross-file imports and computes reachability to separate real effects from unused code. Agent/skill files (.md, .yaml, .json) are scanned with format-specific heuristics. Files over 2MB and directories like .git, venv, and node_modules are skipped.
 
 Python >=3.11. Only three runtime dependencies: pydantic, pyyaml, click.
 

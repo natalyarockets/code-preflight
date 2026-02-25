@@ -328,6 +328,18 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
         description="Graph node state read/write tracking",
     ))
 
+    # Effect graph scanner (IR)
+    ir_findings_count = 0
+    if sec and hasattr(sec, "ir_findings"):
+        ir_findings_count = len(sec.ir_findings)
+    tools.append(ToolResult(
+        name="Effect graph scanner",
+        version="built-in",
+        status="ran" if run_security else "skipped",
+        findings=ir_findings_count if run_security else -1,
+        description="Capability-typed egress, prompt injection paths, auth coverage, severity fusion",
+    ))
+
     # Call graph + projection
     proj = result.projection
     proj_findings = 0

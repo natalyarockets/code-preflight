@@ -9,8 +9,12 @@ from pathlib import Path
 from la_analyzer.security.models import Evidence, DataFlowRisk
 
 # Names that indicate LLM SDK usage
-_LLM_CALL_METHODS = {"create", "generate", "complete", "chat"}
-_LLM_LIBS = {"openai", "anthropic", "livingapps_gateway"}
+_LLM_CALL_METHODS = {"create", "generate", "complete", "chat", "invoke", "ainvoke"}
+_LLM_LIBS = {
+    "openai", "anthropic", "livingapps_gateway",
+    "langchain", "langchain_core", "langchain_openai", "langchain_anthropic",
+    "langchain_community",
+}
 
 # Names that indicate file reading
 _FILE_READ_FUNCS = {"open", "read_csv", "read_json", "read_excel", "read_parquet",
@@ -171,7 +175,11 @@ def _analyze_scope(
             call_name = _full_call_name(node)
             method_name = call_name.rsplit(".", 1)[-1]
             if method_name in _LLM_CALL_METHODS and has_llm:
-                llm_calls.append((node, node.lineno))
+                # Guard: ainvoke/invoke on a graph/StateGraph variable is NOT an LLM call
+                if method_name in ("invoke", "ainvoke") and _is_graph_runtime_call(node):
+                    pass
+                else:
+                    llm_calls.append((node, node.lineno))
 
         # Detect variables that reference file data via subscript
         if isinstance(node, ast.Subscript):
@@ -613,6 +621,41 @@ def _resolve_source(
         if var in tainted_vars and path:
             return f"file: {path}"
     return "uploaded/read file data"
+
+
+def _is_graph_runtime_call(node: ast.Call) -> bool:
+    """Return True if the call looks like a LangGraph graph runtime invoke, not an LLM call.
+
+    Heuristic: receiver name contains 'graph', 'app', 'workflow', or 'chain' but NOT
+    common LLM client variable names.
+    """
+    if not isinstance(node.func, ast.Attribute):
+        return False
+    receiver = node.func.value
+    name = None
+    if isinstance(receiver, ast.Name):
+        name = receiver.id
+    elif isinstance(receiver, ast.Attribute):
+        name = receiver.attr
+
+    if name is None:
+        return False
+
+    name_lower = name.lower()
+    # Graph runtime indicators
+    graph_indicators = {"graph", "app", "workflow", "agent_graph", "compiled",
+                        "state_graph", "langgraph"}
+    llm_indicators = {"llm", "model", "client", "chat", "openai", "anthropic",
+                      "groq", "cohere", "claude"}
+
+    for ind in graph_indicators:
+        if ind in name_lower:
+            return True
+    for ind in llm_indicators:
+        if ind in name_lower:
+            return False
+
+    return False
 
 
 def _snippet(source: str, lineno: int) -> str:

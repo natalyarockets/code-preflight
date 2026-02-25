@@ -112,8 +112,19 @@ def run_security_review(
     except Exception:
         log.exception("Agent scan failed")
 
+    # IR graph analysis
+    ir_findings: list = []
+    try:
+        from la_analyzer.ir import build_effect_graph
+        from la_analyzer.ir.queries import run_all_queries
+        effect_graph = build_effect_graph(workspace_dir, py_files)
+        ir_findings = run_all_queries(effect_graph, existing_findings=code_findings + vuln_findings + resource_findings)
+        log.info("IR graph queries: %d findings", len(ir_findings))
+    except Exception:
+        log.exception("IR graph scan failed")
+
     # Merge all findings
-    all_findings = code_findings + vuln_findings + resource_findings
+    all_findings = code_findings + vuln_findings + resource_findings + ir_findings
 
     # Compute severity counts
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -130,6 +141,17 @@ def run_security_review(
         for af in agent_report.findings:
             if af.severity in severity_counts:
                 severity_counts[af.severity] += 1
+
+    # Gate fix: include analysis secrets in severity counts
+    if analysis_result and hasattr(analysis_result, "secrets"):
+        for sf in analysis_result.secrets.findings:
+            mapped_sev = {
+                "hardcoded_key": "high",
+                "dotenv_file": "high",
+                "token_like": "medium",
+            }.get(sf.kind, "low")
+            if mapped_sev in severity_counts:
+                severity_counts[mapped_sev] += 1
 
     # Pull summary stats from existing analysis
     secrets_found = 0
@@ -153,6 +175,7 @@ def run_security_review(
         data_classifications=data_classifications,
         data_flow_risks=data_flow_risks,
         credential_leak_risks=credential_leaks,
+        ir_findings=ir_findings,
         critical_count=severity_counts["critical"],
         high_count=severity_counts["high"],
         medium_count=severity_counts["medium"],
