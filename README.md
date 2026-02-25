@@ -9,6 +9,19 @@ Three-phase pipeline:
 2. **Security review** -- what could go wrong (injection, data flow, credential leaks, agent risks, effect graph queries)
 3. **Effect projection** -- what actually runs (per-entrypoint reachability, separating real effects from unused code)
 
+## How is this different from Bandit, Semgrep, or Garak?
+
+These tools are all valuable, but they solve adjacent problems:
+
+| Tool | What it does |
+|---|---|
+| Bandit / Semgrep | Generic Python SAST — pattern-matching rules with no AI-app domain knowledge. Bandit is flow-insensitive and flags every `os.system()` equally. Semgrep is powerful but requires custom rules per-SDK, and neither produces a holistic egress report. |
+| Garak / LLM Guard / Vigil / Rebuff | These analyze or guard the **LLM model itself** (adversarial probes, runtime filters). LA Analyzer analyzes the **code that builds the app**, before it ships. |
+| pip-audit / Safety | Dependency scanning only — no structural or data-flow analysis. |
+| Semgrep with custom rules | Gets you further, but you're writing and maintaining rules per library. LA Analyzer has the AI-app semantic model built in: it knows what `sentry_sdk.init()` does, what `graph_app.ainvoke()` is, and how LangGraph state maps to API routes. |
+
+The specific gap LA Analyzer fills: **static analysis that understands the semantics of building AI apps.** It answers "what data leaves this codebase, to whom, and is it safe to deploy?" — not "does this line match a known bad pattern?"
+
 ## Install
 
 ```bash
@@ -255,6 +268,32 @@ pytest
 ```
 
 283 tests across 15 test files. Runs in under 3 seconds.
+
+## Sweet spot and limits
+
+### Where LA Analyzer works well
+
+**FastAPI or Streamlit apps backed by LLM APIs.** If you have a web app that calls OpenAI, Anthropic, or a LangChain/LangGraph pipeline, the tool maps your routes, traces data from request parameters into prompts, detects missing auth guards, and surfaces any implicit telemetry egress.
+
+**Agent workflows with tool registration.** Apps using `@tool` or `bind_tools` — the scanner classifies what capabilities each tool exposes (network, file, subprocess, database) and flags overprivileged tools.
+
+**Batch scripts and CLI tools that call external services.** Clear entrypoints, linear data flow, and explicit I/O make for high-confidence results. The entrypoint effect matrix shows exactly what each script reads, sends, and writes.
+
+**Projects with moderate complexity and explicit imports.** The effect graph is most accurate when SDK usage follows conventional patterns (direct instantiation, standard decorators, top-level imports).
+
+### Where it gets less precise
+
+**Heavily dynamic code.** Abstract interpretation can't fully resolve `getattr`-based dispatch, metaclass magic, plugin systems, or `importlib.import_module` — those edges won't appear in the call graph.
+
+**SDKs not yet in the capability registry.** The effect graph knows about ~20 SDK families. An uncommon observability library or a niche cloud SDK will be treated as an unknown outbound call rather than classified by capability. You can add entries to `ir/capability_registry.py` (one dict entry, no logic changes).
+
+**Non-standard authentication patterns.** The tool detects FastAPI `Depends()` guards. Custom middleware, decorator-based auth outside FastAPI's DI system, or session-based auth in Streamlit may not register as a guard — so unauthenticated-route findings need manual review in those cases.
+
+**Complex multi-branch state machines.** Deep conditional routing (many `if/elif` chains gating which tools fire) can cause reachability analysis to miss some paths. The call graph is conservative: it will catch most effects but may miss some in heavily branched workflows.
+
+**Multi-repo architectures.** LA Analyzer sees one codebase at a time. Cross-service data flows — data that exits repo A, enters repo B via an internal API, and then reaches an LLM — are not traced.
+
+**Very large codebases.** Files over 2MB are skipped. The AST walker is fast but very large monorepos may produce incomplete results in deeper subdirectories.
 
 ## How it works
 

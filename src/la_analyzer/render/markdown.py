@@ -100,9 +100,12 @@ def _render_summary_card(result: ScanResult) -> str:
     # Gate decision
     if s:
         if s.deploy_blocked:
-            lines.append("> **BLOCKED** -- Critical findings must be resolved before deployment.\n")
+            lines.append("> **BLOCKED** -- Critical findings should be resolved before deployment.\n")
         elif s.requires_review:
-            lines.append("> **REVIEW REQUIRED** -- High-severity findings need attention.\n")
+            if s.high_count > 0:
+                lines.append("> **REVIEW REQUIRED** -- High-severity findings should be reviewed.\n")
+            else:
+                lines.append("> **REVIEW REQUIRED** -- Secrets detected in this codebase, see Trust Boundaries.\n")
         else:
             lines.append("> **PASS** -- No critical or high-severity findings.\n")
 
@@ -135,11 +138,9 @@ def _render_trust_boundaries(result: ScanResult) -> str:
     lines: list[str] = []
 
     has_egress = bool(a.egress.outbound_calls)
-    has_cred_leaks = bool(s and s.credential_leak_risks)
-    has_data_flow = bool(s and s.data_flow_risks)
     has_secrets = bool(a.secrets.findings)
 
-    if not (has_egress or has_cred_leaks or has_data_flow or has_secrets):
+    if not (has_egress or has_secrets):
         return ""
 
     lines.append("## Trust Boundaries -- What Leaves This Repo\n")
@@ -152,26 +153,6 @@ def _render_trust_boundaries(result: ScanResult) -> str:
             loc = f"`{call.evidence[0].file}:{call.evidence[0].line}`" if call.evidence else ""
             lines.append(f"- **{call.kind}** via `{call.library}` -> {domains} {loc}")
         lines.append("")
-
-    # Credential exposure
-    if has_cred_leaks:
-        lines.append("### Credential Exposure\n")
-        for cl in s.credential_leak_risks:
-            icon = _sev_icon(cl.severity)
-            loc = f"`{cl.evidence[0].file}:{cl.evidence[0].line}`" if cl.evidence else ""
-            lines.append(f"- {icon} `{cl.credential_name}` -> {leak_label(cl.leak_target)} {loc}")
-        lines.append("")
-
-    # PII / classified data flows
-    if has_data_flow:
-        pii_flows = [df for df in s.data_flow_risks if df.pii_fields_in_path]
-        if pii_flows:
-            lines.append("### PII Flow\n")
-            for df in pii_flows:
-                fields = ", ".join(f"`{f}`" for f in df.pii_fields_in_path[:5])
-                loc = f"`{df.evidence[0].file}:{df.evidence[0].line}`" if df.evidence else ""
-                lines.append(f"- {fields} -> **{df.data_sink}** {loc}")
-            lines.append("")
 
     # Secrets found
     if has_secrets:

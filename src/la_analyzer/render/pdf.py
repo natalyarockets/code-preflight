@@ -332,10 +332,13 @@ class _SecurityReportPDF:
         # Gate decision -- colored background card
         if s.deploy_blocked:
             gate = "blocked"
-            gate_label = "BLOCKED -- Critical findings must be resolved before deployment."
+            gate_label = "BLOCKED -- Critical findings should be resolved before deployment."
         elif s.requires_review:
             gate = "review"
-            gate_label = "REVIEW REQUIRED -- High-severity findings need attention."
+            if s.high_count > 0:
+                gate_label = "REVIEW REQUIRED -- High-severity findings should be reviewed."
+            else:
+                gate_label = "REVIEW REQUIRED -- Secrets detected in this codebase, see Trust Boundaries."
         else:
             gate = "pass"
             gate_label = "PASS -- No critical or high-severity findings."
@@ -406,11 +409,9 @@ class _SecurityReportPDF:
         s = self._result.security
 
         has_egress = bool(a.egress.outbound_calls)
-        has_cred_leaks = bool(s and s.credential_leak_risks)
-        has_data_flow = bool(s and s.data_flow_risks)
         has_secrets = bool(a.secrets.findings)
 
-        if not (has_egress or has_cred_leaks or has_data_flow or has_secrets):
+        if not (has_egress or has_secrets):
             return
 
         self._heading("Trust Boundaries -- What Leaves This Repo")
@@ -422,32 +423,6 @@ class _SecurityReportPDF:
                 loc = f" ({call.evidence[0].file}:{call.evidence[0].line})" if call.evidence else ""
                 self._bullet(f"{call.kind} via {call.library} -> {domains}{loc}")
             self._pdf.ln(2)
-
-        if has_cred_leaks:
-            self._heading("Credential Exposure", 3)
-            for cl in s.credential_leak_risks:
-                loc = f" ({cl.evidence[0].file}:{cl.evidence[0].line})" if cl.evidence else ""
-                x = self._pdf.get_x()
-                self._pdf.set_x(x + 4)
-                self._severity_badge(cl.severity)
-                self._pdf.set_font("Helvetica", "", 9)
-                self._pdf.set_text_color(*_BODY)
-                self._pdf.multi_cell(
-                    self._content_w - 30, 4.5,
-                    self._safe(f"{cl.credential_name} -> {leak_label(cl.leak_target)}{loc}"),
-                    new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT,
-                )
-            self._pdf.ln(2)
-
-        if has_data_flow:
-            pii_flows = [df for df in s.data_flow_risks if df.pii_fields_in_path]
-            if pii_flows:
-                self._heading("PII Flow", 3)
-                for df in pii_flows:
-                    fields = ", ".join(df.pii_fields_in_path[:5])
-                    loc = f" ({df.evidence[0].file}:{df.evidence[0].line})" if df.evidence else ""
-                    self._bullet(f"{fields} -> {df.data_sink}{loc}")
-                self._pdf.ln(2)
 
         if has_secrets:
             self._heading("Secrets Detected", 3)

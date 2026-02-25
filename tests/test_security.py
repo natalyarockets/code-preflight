@@ -413,8 +413,8 @@ for key, val in os.environ.items():
         assert any(r.credential_name == "os.environ" for r in risks)
 
 
-def test_secret_in_headers_is_auth_not_leak():
-    """API key used only in headers= keyword should be http_auth, not http_request."""
+def test_secret_in_headers_is_not_a_finding():
+    """API key used only in headers= is expected auth — no finding should be generated."""
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)
         f = _write(ws, "client.py", '''
@@ -432,9 +432,7 @@ with httpx.Client() as http:
 ''')
         risks = scan_credential_leaks(ws, [f])
         http_risks = [r for r in risks if r.leak_target in ("http_request", "http_auth")]
-        assert len(http_risks) >= 1
-        assert all(r.leak_target == "http_auth" for r in http_risks)
-        assert all(r.severity == "info" for r in http_risks)
+        assert len(http_risks) == 0
 
 
 def test_secret_in_body_is_leak():

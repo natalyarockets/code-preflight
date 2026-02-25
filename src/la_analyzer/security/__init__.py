@@ -142,32 +142,27 @@ def run_security_review(
             if af.severity in severity_counts:
                 severity_counts[af.severity] += 1
 
-    # Gate fix: include analysis secrets in severity counts
-    if analysis_result and hasattr(analysis_result, "secrets"):
-        for sf in analysis_result.secrets.findings:
-            mapped_sev = {
-                "hardcoded_key": "high",
-                "dotenv_file": "high",
-                "token_like": "medium",
-            }.get(sf.kind, "low")
-            if mapped_sev in severity_counts:
-                severity_counts[mapped_sev] += 1
-
     # Pull summary stats from existing analysis
     secrets_found = 0
     egress_endpoints = 0
     hardcoded_paths = 0
+    secrets_gate_triggered = False  # True if secrets warrant review (listed in Trust Boundaries)
     if analysis_result:
         if hasattr(analysis_result, "secrets"):
             secrets_found = len(analysis_result.secrets.findings)
+            for sf in analysis_result.secrets.findings:
+                if sf.kind in ("hardcoded_key", "dotenv_file"):
+                    secrets_gate_triggered = True
+                    break
         if hasattr(analysis_result, "egress"):
             egress_endpoints = len(analysis_result.egress.outbound_calls)
         if hasattr(analysis_result, "io"):
             hardcoded_paths = len(analysis_result.io.hardcoded_paths)
 
-    # Gate decision
+    # Gate decision: counts only cover what appears in Security Findings;
+    # secrets are listed in Trust Boundaries and trigger the gate separately.
     deploy_blocked = severity_counts["critical"] > 0
-    requires_review = severity_counts["high"] > 0
+    requires_review = severity_counts["high"] > 0 or secrets_gate_triggered
 
     report = SecurityReport(
         created_at=datetime.now(timezone.utc).isoformat(),

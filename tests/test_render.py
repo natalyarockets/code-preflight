@@ -135,7 +135,7 @@ def test_render_top_risks():
 
 
 def test_render_trust_boundaries():
-    """Trust boundary section should show egress, credentials, PII."""
+    """Trust boundary section shows egress and secrets only; findings go in Security Findings."""
     analysis = _minimal_analysis()
     analysis.egress = EgressReport(outbound_calls=[OutboundCall(
         kind="llm_sdk", library="openai",
@@ -167,14 +167,18 @@ def test_render_trust_boundaries():
     result = _make_result(analysis=analysis, security=security)
     md = render_markdown(result)
 
+    # Trust Boundaries: egress and secrets only
     assert "Trust Boundaries" in md
     assert "Data Egress" in md
     assert "openai" in md
-    assert "Credential Exposure" in md
-    assert "API_KEY" in md
-    assert "PII Flow" in md
-    assert "`email`" in md
     assert "Secrets Detected" in md
+    # Credential leaks and data flow risks appear in Security Findings, not Trust Boundaries
+    assert "Credential Exposure" not in md
+    assert "PII Flow" not in md
+    assert "Credential Leak Risks" in md
+    assert "API_KEY" in md
+    assert "Data Flow Risks" in md
+    assert "`email`" in md
 
 
 def test_no_trust_boundaries_for_clean_project():

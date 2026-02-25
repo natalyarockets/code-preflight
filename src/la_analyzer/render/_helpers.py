@@ -193,16 +193,12 @@ def executive_summary(result: ScanResult) -> list[str]:
     # Gate decision -- what needs to happen
     if s:
         if s.deploy_blocked:
-            bullets.append("Critical issues must be resolved before deployment.")
+            bullets.append("Critical issues should be resolved before deployment.")
         elif s.requires_review:
-            # Describe what triggered the review requirement
-            high_findings = [f for f in s.findings if f.severity in ("critical", "high")]
-            if s.credential_leak_risks:
-                bullets.append("Credential routing must be reviewed before deployment.")
-            elif high_findings:
-                bullets.append("High-severity findings need review before deployment.")
+            if s.high_count > 0:
+                bullets.append("High-severity findings should be reviewed before deployment.")
             else:
-                bullets.append("Manual review recommended before deployment.")
+                bullets.append("Secrets detected in this codebase; verify they are not exposed in logs or version control.")
         else:
             bullets.append("No critical or high-severity issues detected.")
 

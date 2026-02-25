@@ -164,17 +164,8 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                 body_auth = _secret_as_api_auth_in_body(node, leaked_vars)
                 seen.add(key)
                 if only_in_headers:
-                    risks.append(CredentialLeakRisk(
-                        credential_name=cred_name,
-                        leak_target="http_auth",
-                        description=(
-                            f"Secret variable(s) {cred_name} used as HTTP auth header in {func_name}() call. "
-                            f"This is expected for service authentication. Ensure the target service "
-                            f"has proper access controls (RLS, API scoping, IP allowlisting)."
-                        ),
-                        evidence=[ev],
-                        severity="info",
-                    ))
+                    # Secret used as HTTP auth header — expected, legitimate service auth. Not a finding.
+                    pass
                 elif body_auth:
                     risks.append(CredentialLeakRisk(
                         credential_name=cred_name,
