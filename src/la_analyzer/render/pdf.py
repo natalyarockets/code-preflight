@@ -282,7 +282,6 @@ class _SecurityReportPDF:
         self._render_security_findings()
         self._render_call_graph()
         self._render_structural_summary()
-        self._render_recommendations()
         self._render_toolchain_appendix()
         # Footer on last page
         self._footer()
