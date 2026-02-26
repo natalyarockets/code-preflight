@@ -312,6 +312,23 @@ pytest
 
 288 tests across 15 test files. Runs in under 10 seconds.
 
+## Contributing and working with AI agents
+
+**Read `CLAUDE.md` first.** It contains the architectural invariants for this project. Every coding agent (Claude Code, Cursor, Copilot, etc.) should read it before making changes.
+
+The short version of what CLAUDE.md enforces:
+
+- `SecurityReport.findings` is the one canonical findings list. `data_flow_risks`, `credential_leak_risks`, `agent_findings` are read-only filtered views — never iterate them in projection or count them separately.
+- `deploy_blocked`, `requires_review`, `gate_status`, `gate_message`, and all severity counts are computed fields derived from `findings`. Never store or pass them as constructor arguments.
+- `scan_data_flow()` takes `(workspace, py_files)` only — the `data_classifications` parameter was removed.
+- I/O normalization runs once in `service.py` via `_finalize_io_report()`, after all three sources (scan_io, notebooks, API) are merged. `scan_io()` does detection only.
+- Entrypoint matrix counting lives in `compute_entrypoint_metrics()` in `render/_helpers.py`. Both renderers call it; they do not re-implement it inline.
+- `EgressReport` has one field: `outbound_calls`. No gateway recommendations, no model name tracking — that was removed.
+- Dependency specs are preserved when passed to pip-audit: `f"{d.name}{d.spec}" if d.spec else d.name`.
+- Hardcoded paths are merged by path string (dict-based), not appended per-occurrence.
+
+**Before changing any interface:** `grep -r "thing_you_are_changing" src/ tests/` and update every call site in the same commit. The most common source of regressions in this project has been changing a field type or removing a parameter without tracing all the places that depend on it.
+
 ## Sweet spot and limits
 
 ### Where Code Preflight works well
