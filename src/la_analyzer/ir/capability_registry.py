@@ -106,6 +106,36 @@ CAPABILITY_REGISTRY: dict[str, CapabilityEntry] = {
         sink_methods=frozenset({"invoke", "ainvoke", "stream", "astream"}),
         sink_kind=SinkKind.LLM_PROMPT,
     ),
+    "ChatOllama": CapabilityEntry(
+        capability=Capability.LLM_CLIENT,
+        service_name="Ollama (LangChain)",
+        sink_methods=frozenset({"invoke", "ainvoke", "stream", "astream"}),
+        sink_kind=SinkKind.LLM_PROMPT,
+    ),
+    "OllamaLLM": CapabilityEntry(
+        capability=Capability.LLM_CLIENT,
+        service_name="Ollama",
+        sink_methods=frozenset({"invoke", "ainvoke", "predict", "generate"}),
+        sink_kind=SinkKind.LLM_PROMPT,
+    ),
+    "ChatMistralAI": CapabilityEntry(
+        capability=Capability.LLM_CLIENT,
+        service_name="Mistral AI (LangChain)",
+        sink_methods=frozenset({"invoke", "ainvoke", "stream", "astream"}),
+        sink_kind=SinkKind.LLM_PROMPT,
+    ),
+    "MistralClient": CapabilityEntry(
+        capability=Capability.LLM_CLIENT,
+        service_name="Mistral AI",
+        sink_methods=frozenset({"chat", "chat_stream", "chat_async"}),
+        sink_kind=SinkKind.LLM_PROMPT,
+    ),
+    "Mistral": CapabilityEntry(
+        capability=Capability.LLM_CLIENT,
+        service_name="Mistral AI",
+        sink_methods=frozenset({"chat", "chat_stream", "chat_async", "complete"}),
+        sink_kind=SinkKind.LLM_PROMPT,
+    ),
     # ── Graph Runtimes — ainvoke is NOT an LLM prompt sink ────────────────
     "CompiledStateGraph": CapabilityEntry(
         capability=Capability.GRAPH_RUNTIME,

@@ -29,6 +29,8 @@ _TRACKED_LIBS: dict[str, str] = {
     "groq": "llm_sdk",
     "together": "llm_sdk",
     "huggingface_hub": "llm_sdk",
+    "ollama": "llm_sdk",
+    "mistralai": "llm_sdk",
     # HTTP clients
     "requests": "http",
     "httpx": "http",
@@ -68,6 +70,13 @@ _SDK_CONSTRUCTORS: dict[str, str] = {
     "Cohere": "cohere",
     "SMTP": "smtplib",
     "SMTP_SSL": "smtplib",
+    # Ollama — LangChain integration and direct client
+    "ChatOllama": "ollama",
+    "OllamaLLM": "ollama",
+    # Mistral AI — direct SDK and LangChain integration
+    "MistralClient": "mistralai",
+    "Mistral": "mistralai",
+    "ChatMistralAI": "mistralai",
 }
 
 # Well-known default domains for SDK libraries.
@@ -84,6 +93,8 @@ _DEFAULT_DOMAINS: dict[str, list[str]] = {
     "huggingface_hub": ["huggingface.co"],
     "litellm": ["api.openai.com"],  # litellm proxies; default is OpenAI-compatible
     "google": ["generativelanguage.googleapis.com"],
+    "ollama": ["localhost:11434"],   # self-hosted; default local endpoint
+    "mistralai": ["api.mistral.ai"],
     "supabase": ["*.supabase.co"],
     "firebase_admin": ["*.firebaseio.com"],
     "boto3": ["*.amazonaws.com"],

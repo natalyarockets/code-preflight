@@ -104,6 +104,19 @@ def count_py_files(analysis) -> str:
     return str(analysis.py_file_count) if analysis.py_file_count else "unknown"
 
 
+def finding_effect_title(f) -> str:
+    """Canonical effect-graph title for a SecurityFinding.
+
+    Used by projection.py when building ProjectedEffect titles and by any
+    renderer that needs a concise, structured label for a finding.
+    """
+    if f.category == "data_flow" and f.data_source and f.data_sink:
+        return f"Data flow: {f.data_source} -> {f.data_sink}"
+    if f.category == "credential_leak" and f.credential_name:
+        return f"Credential leak: {f.credential_name}"
+    return f.title
+
+
 def strip_bandit_prefix(title: str) -> str:
     """Strip Bandit finding codes (e.g. 'B608: ') from a finding title.
 

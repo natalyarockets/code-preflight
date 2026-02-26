@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 
 from la_analyzer.analyzer.call_graph import build_call_graph, reachable_from
+from la_analyzer.render._helpers import finding_effect_title
 from la_analyzer.analyzer.models import (
     AnalysisResult,
     CallGraph,
@@ -238,12 +239,7 @@ def _collect_effects(
     # data_flow and credential_leak categories without double-counting.
     if security:
         for f in security.findings:
-            if f.category == "data_flow":
-                title = f"Data flow: {f.data_source} -> {f.data_sink}" if f.data_source and f.data_sink else f.title
-            elif f.category == "credential_leak":
-                title = f"Credential leak: {f.credential_name}" if f.credential_name else f.title
-            else:
-                title = f.title
+            title = finding_effect_title(f)
             for ev in f.evidence:
                 effects.append(ProjectedEffect(
                     source="security",

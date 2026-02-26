@@ -166,22 +166,25 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Securit
                        (func_name in _HTTP_ATTRS_AMBIGUOUS and bool(file_imports & _HTTP_LIBS)))
             if is_http:
                 # Distinguish: secret only in headers= keyword (legitimate auth)
-                # vs secret in body/URL/other positions (potential leak)
+                # vs secret in params= auth key (standard for Tavily, SerpAPI, etc.)
+                # vs secret in json= body auth (also standard for some APIs)
+                # vs secret in other positions (potential leak)
                 only_in_headers = _secret_only_in_headers(node, leaked_vars)
                 body_auth = _secret_as_api_auth_in_body(node, leaked_vars)
+                param_auth = _secret_in_query_params(node, leaked_vars)
                 seen.add(key)
                 if only_in_headers:
                     # Secret used as HTTP auth header — expected, legitimate service auth. Not a finding.
                     pass
-                elif body_auth:
+                elif body_auth or param_auth:
                     risks.append(SecurityFinding(
                         category="credential_leak",
                         title=f"Credential leak: {cred_name} → http_request",
                         credential_name=cred_name,
                         leak_target="http_request",
                         description=(
-                            f"API key {cred_name} sent in request body for {func_name}() call "
-                            f"(standard for this API, but prefer header-based auth)"
+                            f"API key {cred_name} sent in request {'params' if param_auth else 'body'} "
+                            f"for {func_name}() call (standard for this API, but prefer header-based auth)"
                         ),
                         evidence=[ev],
                         severity="medium",
@@ -360,6 +363,57 @@ def _secret_as_api_auth_in_body(call: ast.Call, secret_vars: set[str]) -> bool:
         names_outside |= _collect_names(arg)
     for kw in call.keywords:
         if kw.arg != "json":
+            names_outside |= _collect_names(kw)
+
+    return len(secrets_in_other_keys) == 0 and len(names_outside & secret_vars) == 0
+
+
+def _secret_in_query_params(call: ast.Call, secret_vars: set[str]) -> bool:
+    """Check if secrets appear only as auth keys in a params= query-string argument.
+
+    params={"apikey": KEY} is standard query-param auth (Tavily, SerpAPI, etc.).
+    It's less secure than header auth but not a credential leak.
+    """
+    params_kw = None
+    for kw in call.keywords:
+        if kw.arg == "params":
+            params_kw = kw
+            break
+
+    if params_kw is None:
+        return False
+
+    # params= must be a dict literal to inspect key names
+    if not isinstance(params_kw.value, ast.Dict):
+        return False
+
+    secrets_in_auth_keys: set[str] = set()
+    secrets_in_other_keys: set[str] = set()
+
+    for key_node, val_node in zip(params_kw.value.keys, params_kw.value.values):
+        val_names = _collect_names(val_node)
+        leaked = val_names & secret_vars
+        if not leaked:
+            continue
+
+        key_str = ""
+        if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+            key_str = key_node.value
+
+        if key_str.lower().replace("-", "_") in {k.lower().replace("-", "_") for k in _API_AUTH_KEYS}:
+            secrets_in_auth_keys |= leaked
+        else:
+            secrets_in_other_keys |= leaked
+
+    if not secrets_in_auth_keys:
+        return False
+
+    # Ensure secrets don't also appear outside params=
+    names_outside: set[str] = set()
+    for arg in call.args:
+        names_outside |= _collect_names(arg)
+    for kw in call.keywords:
+        if kw.arg != "params":
             names_outside |= _collect_names(kw)
 
     return len(secrets_in_other_keys) == 0 and len(names_outside & secret_vars) == 0

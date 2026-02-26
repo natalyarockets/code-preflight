@@ -139,30 +139,33 @@ def _analyze_scope(
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             var_name = _target_name(target)
+            all_names = _all_target_names(target)
             if var_name and isinstance(node.value, ast.Call):
                 call_name = _full_call_name(node.value)
                 # pd.read_csv(...), open(...).read(), Path(...).read_text()
                 call_parts = set(call_name.split("."))
                 if call_parts & _FILE_READ_FUNCS:
-                    file_data_vars.add(var_name)
+                    # Taint ALL unpacked variables: user, email, phone = df → all tainted
+                    file_data_vars.update(all_names)
                     path_arg = _extract_file_path(node.value)
                     file_reads.append((var_name, node.lineno, path_arg))
 
                     # Check if the path hints at PII data
                     if path_arg and _PII_FIELD_RE.search(path_arg):
-                        pii_vars.add(var_name)
+                        pii_vars.update(all_names)
 
-            # Track variables with PII-suggestive names
-            if var_name and _PII_FIELD_RE.search(var_name):
-                pii_vars.add(var_name)
+            # Track variables with PII-suggestive names (all unpacked vars)
+            for name in all_names:
+                if _PII_FIELD_RE.search(name):
+                    pii_vars.add(name)
 
             # Propagate file data taint through any expression referencing tainted vars:
             # processed = df.dropna()  →  processed inherits df's taint
             # prompt = f"Analyze: {row}"  →  prompt inherits row's taint
-            if var_name:
+            if all_names:
                 value_names = _collect_names(node.value)
                 if value_names & file_data_vars:
-                    file_data_vars.add(var_name)
+                    file_data_vars.update(all_names)
 
         # For-loop variable taint: for row in reader → row inherits taint
         if isinstance(node, ast.For):
@@ -591,13 +594,13 @@ def _analyze_cross_function(
             continue
 
         # Seed: variables that directly receive return values from file-reader functions.
+        # Taint all unpacked vars: a, b, c = load_data() → all three tainted.
         file_data_vars: set[str] = set()
         for child in ast.walk(node):
             if isinstance(child, ast.Assign) and len(child.targets) == 1:
-                var_name = _target_name(child.targets[0])
-                if var_name and isinstance(child.value, ast.Call):
+                if isinstance(child.value, ast.Call):
                     if isinstance(child.value.func, ast.Name) and child.value.func.id in file_reader_funcs:
-                        file_data_vars.add(var_name)
+                        file_data_vars.update(_all_target_names(child.targets[0]))
 
         if not file_data_vars:
             continue
@@ -672,10 +675,22 @@ def _target_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Tuple):
-        # Take first element for unpacking
         if node.elts and isinstance(node.elts[0], ast.Name):
             return node.elts[0].id
     return None
+
+
+def _all_target_names(node: ast.expr) -> list[str]:
+    """Return all variable names from a possibly-tuple assignment target.
+
+    For `user, email, phone = df`, returns ['user', 'email', 'phone'] so
+    that all unpacked variables get tainted, not just the first.
+    """
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Tuple):
+        return [elt.id for elt in node.elts if isinstance(elt, ast.Name)]
+    return []
 
 
 def _full_call_name(node: ast.Call) -> str:
