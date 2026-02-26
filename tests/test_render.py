@@ -45,7 +45,7 @@ def _minimal_analysis() -> AnalysisResult:
 
 
 def _minimal_security() -> SecurityReport:
-    return SecurityReport(deploy_blocked=False, requires_review=False)
+    return SecurityReport()
 
 
 def _make_result(
@@ -71,7 +71,6 @@ def test_render_summary_card_at_top():
             description="subprocess call detected",
             evidence=[SecEvidence(file="app.py", line=5, snippet="subprocess.run(...)")],
         )],
-        deploy_blocked=True, requires_review=False,
     )
     result = _make_result(security=security)
     md = render_markdown(result)
@@ -118,7 +117,6 @@ def test_render_top_risks():
             evidence=[SecEvidence(file="app.py", line=10, snippet="print(api_key)")],
             severity="critical",
         )],
-        deploy_blocked=True,
     )
     result = _make_result(security=security)
     md = render_markdown(result)
@@ -529,7 +527,6 @@ def test_pdf_full_data(tmp_path):
         data_classifications=[DataClassification(
             category="pii", confidence=0.95, fields_detected=["email", "ssn"],
         )],
-        deploy_blocked=True, requires_review=False,
     )
 
     projection = ProjectionReport(

@@ -79,21 +79,21 @@ class SecurityReport(BaseModel):
 
     @computed_field
     @property
-    def deploy_blocked(self) -> bool:
+    def has_critical(self) -> bool:
         """True when any critical finding is present."""
         return any(f.severity == "critical" for f in self.findings)
 
     @computed_field
     @property
     def requires_review(self) -> bool:
-        """True when any high-severity finding is present. May be True alongside deploy_blocked; gate_status resolves the precedence."""
+        """True when any high-severity finding is present. May be True alongside has_critical; gate_status resolves the precedence."""
         return any(f.severity == "high" for f in self.findings)
 
     @computed_field
     @property
     def gate_status(self) -> str:
         """One of 'blocked', 'review', 'pass'."""
-        if self.deploy_blocked:
+        if self.has_critical:
             return "blocked"
         if self.requires_review:
             return "review"
@@ -103,8 +103,8 @@ class SecurityReport(BaseModel):
     @property
     def gate_message(self) -> str:
         """Human-readable gate decision sentence."""
-        if self.deploy_blocked:
-            return "BLOCKED -- Critical findings should be resolved before deployment."
+        if self.has_critical:
+            return "BLOCKED -- Critical findings must be resolved."
         if self.requires_review:
             return "REVIEW REQUIRED -- High-severity findings should be reviewed."
         return "PASS -- No critical or high-severity findings."

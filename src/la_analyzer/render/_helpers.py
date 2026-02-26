@@ -219,10 +219,10 @@ def executive_summary(result: ScanResult) -> list[str]:
 
     # Gate decision -- what needs to happen
     if s:
-        if s.deploy_blocked:
-            bullets.append("Critical issues should be resolved before deployment.")
+        if s.has_critical:
+            bullets.append("Critical issues must be resolved.")
         elif s.requires_review:
-            bullets.append("High-severity findings should be reviewed before deployment.")
+            bullets.append("High-severity findings should be reviewed.")
         else:
             bullets.append("No critical or high-severity issues detected.")
 

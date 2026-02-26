@@ -157,7 +157,7 @@ def run_security_review(
     egress_endpoints = len(analysis_result.egress.outbound_calls) if analysis_result else 0
     hardcoded_paths = len(analysis_result.io.hardcoded_paths) if analysis_result else 0
 
-    # Gate booleans (deploy_blocked, requires_review) are computed fields on
+    # Gate booleans (has_critical, requires_review) are computed fields on
     # SecurityReport — derived from findings automatically, no need to set them.
     report = SecurityReport(
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -178,7 +178,7 @@ def run_security_review(
         "Security review complete: %d critical, %d high, %d medium, %d low | blocked=%s review=%s",
         report.critical_count, report.high_count,
         report.medium_count, report.low_count,
-        report.deploy_blocked, report.requires_review,
+        report.has_critical, report.requires_review,
     )
 
     return report

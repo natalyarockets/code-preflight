@@ -82,7 +82,7 @@ $ la-scan examples/sample_batch_app
 - Makes outbound HTTP requests to dynamically resolved URLs.
 - 1 LLM prompt site(s) inject runtime data (text).
 - 2 embedded secret(s) found (dotenv_file, hardcoded_key).
-- High-severity findings should be reviewed before deployment.
+- High-severity findings should be reviewed.
 
 ## Security Summary
 
@@ -265,8 +265,8 @@ result.analysis.tool_registration.tools      # LLM-callable tools
 result.analysis.state_flow.node_flows        # LangGraph state reads/writes
 
 # Phase 2: security review
-result.security.deploy_blocked        # True if critical findings
-result.security.requires_review       # True if high findings or secrets detected
+result.security.has_critical          # True if any critical finding present
+result.security.requires_review       # True if any high-severity finding present
 result.security.findings              # all findings: code injection, vulns, IR queries (origin="ir_query"), etc.
 result.security.ir_query_count        # number of findings produced by the effect graph IR
 result.security.data_classifications  # PII, financial, health, credential (informational, no severity)
@@ -310,7 +310,7 @@ pip install -e ".[dev]"    # includes bandit, detect-secrets, pip-audit
 pytest
 ```
 
-288 tests across 15 test files. Runs in under 10 seconds.
+288 tests across 19 test files.
 
 ## Contributing and working with AI agents
 
@@ -319,7 +319,7 @@ pytest
 The short version of what CLAUDE.md enforces:
 
 - `SecurityReport.findings` is the one canonical findings list. `data_flow_risks`, `credential_leak_risks`, `agent_findings` are read-only filtered views — never iterate them in projection or count them separately.
-- `deploy_blocked`, `requires_review`, `gate_status`, `gate_message`, and all severity counts are computed fields derived from `findings`. Never store or pass them as constructor arguments.
+- `has_critical`, `requires_review`, `gate_status`, `gate_message`, and all severity counts are computed fields derived from `findings`. Never store or pass them as constructor arguments.
 - `scan_data_flow()` takes `(workspace, py_files)` only — the `data_classifications` parameter was removed.
 - I/O normalization runs once in `service.py` via `_finalize_io_report()`, after all three sources (scan_io, notebooks, API) are merged. `scan_io()` does detection only.
 - Entrypoint matrix counting lives in `compute_entrypoint_metrics()` in `render/_helpers.py`. Both renderers call it; they do not re-implement it inline.

@@ -21,7 +21,7 @@ These are hard rules. If you think you need to break one, stop and ask.
 
 ### SecurityReport
 - `findings: list[SecurityFinding]` is the **one canonical list**. Every finding from every scanner ends up here.
-- `deploy_blocked`, `requires_review`, `gate_status`, `gate_message`, all severity counts, and `ir_query_count` are **`@computed_field`** derived from `findings`. Do not store them as mutable fields.
+- `has_critical`, `requires_review`, `gate_status`, `gate_message`, all severity counts, and `ir_query_count` are **`@computed_field`** derived from `findings`. Do not store them as mutable fields.
 - `data_flow_risks`, `credential_leak_risks`, `agent_findings` are **plain `@property`** (not `@computed_field`). They are NOT serialized by `model_dump()`. They are filtered views only — never the authoritative list for anything.
 - **`projection.py` must iterate `security.findings` exactly once.** It must never iterate `data_flow_risks` or `credential_leak_risks` — those are the same findings and will cause double/triple counting. If you change filtered view types, immediately check `projection.py`.
 - `gate_status`/`gate_message` live on the model. Renderers read them; they do not re-derive gate wording.

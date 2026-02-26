@@ -665,7 +665,7 @@ while True:
 
         # Should have findings (subprocess is critical with Bandit or fallback)
         assert len(report.findings) > 0
-        assert report.deploy_blocked is True or report.requires_review is True
+        assert report.has_critical is True or report.requires_review is True
 
         # Should detect PII
         assert len(report.data_classifications) > 0
@@ -694,7 +694,7 @@ if __name__ == "__main__":
         report = run_security_review(
             workspace_dir=ws,
         )
-        assert report.deploy_blocked is False
+        assert report.has_critical is False
         assert report.critical_count == 0
         assert report.high_count == 0
 
