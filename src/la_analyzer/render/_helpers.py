@@ -26,7 +26,7 @@ def _summary_title(title: str) -> str:
 
 
 def top_risks(result: ScanResult, max_risks: int | None = None) -> list[str]:
-    """Extract actionable severe risk descriptions.
+    """Extract actionable severe risk descriptions from the unified findings list.
 
     By default returns all critical/high risks so the list length matches the
     severe finding counts shown in the summary.
@@ -36,31 +36,21 @@ def top_risks(result: ScanResult, max_risks: int | None = None) -> list[str]:
         return []
 
     risks: list[tuple[int, str]] = []
-
-    for cl in s.credential_leak_risks:
-        if cl.severity in ("critical", "high"):
-            prio = sev_order(cl.severity)
-            loc = f" at {cl.evidence[0].file}:{cl.evidence[0].line}" if cl.evidence else ""
-            risks.append((prio, f"Credential '{cl.credential_name}' exposed to {leak_label(cl.leak_target)}{loc}"))
-
-    for df in s.data_flow_risks:
-        if df.severity in ("critical", "high"):
-            prio = sev_order(df.severity)
-            pii = ", ".join(df.pii_fields_in_path[:3]) if df.pii_fields_in_path else "file data"
-            loc = f" at {df.evidence[0].file}:{df.evidence[0].line}" if df.evidence else ""
-            risks.append((prio, f"{pii} flows to {df.data_sink}{loc}"))
-
     for f in s.findings:
-        if f.severity in ("critical", "high"):
-            prio = sev_order(f.severity)
-            loc = f" at {f.evidence[0].file}:{f.evidence[0].line}" if f.evidence else ""
-            risks.append((prio, f"{_summary_title(f.title)}{loc}"))
+        if f.severity not in ("critical", "high"):
+            continue
+        prio = sev_order(f.severity)
+        loc = f" at {f.evidence[0].file}:{f.evidence[0].line}" if f.evidence else ""
 
-    if s.agent_scan:
-        for af in s.agent_scan.findings:
-            if af.severity in ("critical", "high"):
-                prio = sev_order(af.severity)
-                risks.append((prio, f"{af.title} at {af.file}:{af.line}"))
+        if f.category == "credential_leak" and f.credential_name:
+            text = f"Credential '{f.credential_name}' exposed to {leak_label(f.leak_target or '')}{loc}"
+        elif f.category == "data_flow" and f.data_sink:
+            pii = ", ".join(f.pii_fields[:3]) if f.pii_fields else "file data"
+            text = f"{pii} flows to {f.data_sink}{loc}"
+        else:
+            text = f"{_summary_title(f.title)}{loc}"
+
+        risks.append((prio, text))
 
     risks.sort(key=lambda x: x[0])
     result_risks = [text for _prio, text in risks]
@@ -81,21 +71,8 @@ def leak_label(target: str) -> str:
 
 
 def count_py_files(analysis) -> str:
-    """Estimate Python file count from evidence locations."""
-    files: set[str] = set()
-    for inp in analysis.io.inputs:
-        for e in inp.evidence:
-            if e.file.endswith(".py"):
-                files.add(e.file)
-    for out in analysis.io.outputs:
-        for e in out.evidence:
-            if e.file.endswith(".py"):
-                files.add(e.file)
-    for call in analysis.egress.outbound_calls:
-        for e in call.evidence:
-            if e.file.endswith(".py"):
-                files.add(e.file)
-    return str(len(files)) if files else "multiple"
+    """Return the Python file count recorded during analysis."""
+    return str(analysis.py_file_count) if analysis.py_file_count else "unknown"
 
 
 def strip_bandit_prefix(title: str) -> str:
@@ -161,9 +138,9 @@ def executive_summary(result: ScanResult) -> list[str]:
 
     # PII flow
     if s and s.data_flow_risks:
-        pii_flows = [df for df in s.data_flow_risks if df.pii_fields_in_path]
+        pii_flows = [df for df in s.data_flow_risks if df.pii_fields]
         if pii_flows:
-            fields = sorted({f for df in pii_flows for f in df.pii_fields_in_path[:3]})
+            fields = sorted({f for df in pii_flows for f in df.pii_fields[:3]})
             sinks = sorted({df.data_sink for df in pii_flows})
             bullets.append(
                 f"PII fields ({', '.join(fields)}) flow to {', '.join(sinks)}."

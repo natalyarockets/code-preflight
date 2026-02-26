@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from la_analyzer.analyzer.models import EntrypointCandidate, Evidence
+from la_analyzer.utils import snippet
 
 # Filenames that commonly serve as entrypoints (strong signal)
 _ENTRYPOINT_NAMES = {"main.py", "app.py", "run.py", "cli.py"}
@@ -60,7 +61,7 @@ def scan_entrypoints(
                     Evidence(
                         file=rel,
                         line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                 )
 
@@ -71,7 +72,7 @@ def scan_entrypoints(
                         has_argparse = True
                         evidences.append(Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         ))
                     if alias.name == "click":
                         has_click = True
@@ -86,7 +87,7 @@ def scan_entrypoints(
                     has_argparse = True
                     evidences.append(Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     ))
                 if node.module.startswith("click"):
                     has_click = True
@@ -122,7 +123,7 @@ def scan_entrypoints(
                     has_fire = True
                     evidences.append(Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     ))
 
             # @click.command() or @app.command() decorators
@@ -133,7 +134,7 @@ def scan_entrypoints(
                         if has_click:
                             evidences.append(Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             ))
 
         # FastAPI uvicorn entrypoint — higher priority than generic python command
@@ -148,7 +149,7 @@ def scan_entrypoints(
                         Evidence(
                             file=rel,
                             line=fastapi_app_line,
-                            snippet=_snippet(source, fastapi_app_line),
+                            snippet=snippet(source, fastapi_app_line),
                         )
                     ],
                 )
@@ -196,7 +197,7 @@ def scan_entrypoints(
                         Evidence(
                             file=rel,
                             line=1,
-                            snippet=_snippet(source, 1),
+                            snippet=snippet(source, 1),
                         )
                     ],
                 )
@@ -287,8 +288,3 @@ def _module_path(rel: str) -> str:
     return rel.replace("/", ".").replace("\\", ".").removesuffix(".py")
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

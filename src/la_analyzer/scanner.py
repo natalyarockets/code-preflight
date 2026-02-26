@@ -156,12 +156,10 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
         bandit_findings = -1
     else:
         # Bandit ran if security ran and it was installed. Count its findings
-        # (category mapping from code_scan -- findings with B-prefixed titles).
+        # (identified by origin field set in code_scan._bandit_scan).
         bandit_findings = 0
         if sec:
-            bandit_findings = sum(
-                1 for f in sec.findings if f.title[:1] == "B" and f.title[1:4].isdigit()
-            )
+            bandit_findings = sum(1 for f in sec.findings if f.origin == "bandit")
         bandit_status = "ran"
     tools.append(ToolResult(
         name="Bandit",
@@ -228,8 +226,7 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
     if sec:
         platform_findings = sum(
             1 for f in sec.findings
-            if not (f.title[:1] == "B" and f.title[1:4].isdigit())
-            and f.category != "deps"
+            if f.origin != "bandit" and f.category not in ("deps", "data_flow", "credential_leak", "agent")
         )
     tools.append(ToolResult(
         name="LA code scanner",
@@ -291,8 +288,8 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
 
     # Agent/skill scanner
     agent_findings = 0
-    if sec and sec.agent_scan:
-        agent_findings = len(sec.agent_scan.findings)
+    if sec:
+        agent_findings = len(sec.agent_findings)
     tools.append(ToolResult(
         name="Agent/skill scanner",
         version="built-in",
@@ -330,8 +327,12 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
 
     # Effect graph scanner (IR)
     ir_findings_count = 0
-    if sec and hasattr(sec, "ir_findings"):
-        ir_findings_count = len(sec.ir_findings)
+    if sec:
+        ir_findings_count = getattr(
+            sec,
+            "ir_query_count",
+            sum(1 for f in sec.findings if getattr(f, "origin", "") == "ir_query"),
+        )
     tools.append(ToolResult(
         name="Effect graph scanner",
         version="built-in",

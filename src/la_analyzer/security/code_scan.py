@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from la_analyzer.security.models import Evidence, SecurityFinding
+from la_analyzer.utils import snippet
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +207,8 @@ def _bandit_scan(workspace: Path) -> list[SecurityFinding]:
                 snippet=snippet,
             )],
             recommendation=_bandit_recommendation(test_id),
+            origin="bandit",
+            origin_id=test_id,
         ))
 
     return findings
@@ -278,7 +281,7 @@ def _platform_scan(workspace: Path, py_files: list[Path]) -> list[SecurityFindin
                             description="__import__() bypasses static import patching",
                             evidence=[Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             )],
                             recommendation="Use standard import statements instead.",
                         ))
@@ -296,7 +299,7 @@ def _platform_scan(workspace: Path, py_files: list[Path]) -> list[SecurityFindin
                                 description="importlib.import_module() bypasses static import patching",
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 recommendation="Use standard import statements instead.",
                             ))
@@ -329,7 +332,7 @@ def _platform_scan(workspace: Path, py_files: list[Path]) -> list[SecurityFindin
                                 description=desc,
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 recommendation=f"Review whether {root} usage is necessary for this app's function.",
                             ))
@@ -398,7 +401,7 @@ def _fallback_core_scan(workspace: Path, py_files: list[Path]) -> list[SecurityF
                             description=desc,
                             evidence=[Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             )],
                             recommendation="Replace with a safer alternative or ensure input is properly validated.",
                         ))
@@ -419,7 +422,7 @@ def _fallback_core_scan(workspace: Path, py_files: list[Path]) -> list[SecurityF
                                 description=f"subprocess.{attr}() runs external processes with potential shell access",
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 recommendation="Review command construction for injection risks. Avoid shell=True.",
                             ))
@@ -449,7 +452,7 @@ def _fallback_core_scan(workspace: Path, py_files: list[Path]) -> list[SecurityF
                                 description=desc,
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 recommendation="Review whether this operation is necessary and properly bounded.",
                             ))
@@ -474,7 +477,7 @@ def _fallback_core_scan(workspace: Path, py_files: list[Path]) -> list[SecurityF
                                     description="yaml.load() without SafeLoader can execute arbitrary Python code",
                                     evidence=[Evidence(
                                         file=rel, line=node.lineno,
-                                        snippet=_snippet(source, node.lineno),
+                                        snippet=snippet(source, node.lineno),
                                     )],
                                     recommendation="Use yaml.safe_load() or pass Loader=yaml.SafeLoader.",
                                 ))
@@ -502,11 +505,6 @@ def _read_source_line(
             cache[rel_path] = (workspace / rel_path).read_text(errors="replace")
         except OSError:
             cache[rel_path] = ""
-    return _snippet(cache[rel_path], lineno)
+    return snippet(cache[rel_path], lineno)
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

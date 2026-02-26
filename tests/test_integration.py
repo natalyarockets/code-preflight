@@ -23,8 +23,6 @@ def test_full_analysis():
         assert Path(result.egress_report_path).exists()
         assert Path(result.secrets_report_path).exists()
         assert Path(result.deps_report_path).exists()
-        assert Path(result.porting_plan_path).exists()
-        assert Path(result.manifest_path).exists()
 
         # Detection: should find Python batch archetype
         assert "python" in result.detection.languages
@@ -41,7 +39,6 @@ def test_full_analysis():
         # Egress: should detect OpenAI and requests usage
         assert any(c.kind == "llm_sdk" for c in result.egress.outbound_calls)
         assert any(c.kind == "http" for c in result.egress.outbound_calls)
-        assert result.egress.suggested_gateway_needs.needs_llm_gateway is True
 
         # Secrets: should detect hardcoded API_KEY and .env file
         assert len(result.secrets.findings) >= 1
@@ -54,19 +51,6 @@ def test_full_analysis():
         assert "pandas" in dep_names
         assert "openai" in dep_names
         assert "requests" in dep_names
-
-        # Porting plan: should have required changes
-        assert len(result.porting_plan.required_changes) >= 1
-
-        # Manifest: should be valid YAML with expected fields
-        import yaml
-        manifest_content = Path(result.manifest_path).read_text()
-        manifest = yaml.safe_load(manifest_content)
-        assert manifest["app"]["name"] == "sample_batch_app"
-        assert manifest["runtime"]["type"] == "python"
-        assert manifest["runtime"]["entrypoint"]["kind"] == "batch"
-        assert manifest["egress"]["mode"] == "deny_by_default"
-        assert manifest.get("connections", {}) == {} or "connections" not in manifest
 
 
 def test_ipynb_checkpoints_skipped():

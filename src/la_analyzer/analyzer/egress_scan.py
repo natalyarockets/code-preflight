@@ -10,8 +10,8 @@ from la_analyzer.analyzer.models import (
     EgressReport,
     Evidence,
     OutboundCall,
-    SuggestedGatewayNeeds,
 )
+from la_analyzer.utils import snippet
 
 # Libraries we track → kind
 _TRACKED_LIBS: dict[str, str] = {
@@ -101,33 +101,10 @@ _URL_RE = re.compile(
     r"""["'](https?://([a-zA-Z0-9.-]+(?:\.[a-zA-Z]{2,}))[^"']*?)["']"""
 )
 
-# Regex for model name literals (also used bare, without quotes, for constant resolution)
-_MODEL_NAME_RE = re.compile(
-    r"(?:gpt-[34][a-z0-9.-]*"
-    r"|o[1-9]-[a-z]*"
-    r"|text-davinci[a-z0-9-]*"
-    r"|text-embedding-[a-z0-9.-]*"
-    r"|claude-[a-z0-9.-]+"
-    r"|gemini-[a-z0-9.-]+"
-    r"|llama-?[a-z0-9.-]*"
-    r"|mistral-[a-z0-9.-]+"
-    r"|command-r[a-z0-9.-]*"
-    r"|grok-[a-z0-9.-]*"
-    r"|dall-e-[a-z0-9.-]*"
-    r"|whisper-[a-z0-9.-]*"
-    r"|tts-[a-z0-9.-]*)",
-    re.IGNORECASE,
-)
-# Wrapped version for scanning source text (matches quoted strings)
-_MODEL_RE = re.compile(
-    r"""["'](""" + _MODEL_NAME_RE.pattern + r""")["']""",
-    re.IGNORECASE,
-)
 
 
 def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
     calls: list[OutboundCall] = []
-    models_found: set[str] = set()
     libs_imported: dict[str, set[str]] = {}  # file → set of imported lib names
 
     for fpath in py_files:
@@ -136,7 +113,6 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
             source = fpath.read_text(errors="replace")
             tree = ast.parse(source, filename=rel)
         except SyntaxError:
-            _regex_scan(source, rel, calls, models_found)
             continue
 
         file_imports: set[str] = set()
@@ -201,7 +177,7 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                 if root_lib in file_imports or lib in file_imports:
                     ev = Evidence(
                         file=rel, line=assign_line,
-                        snippet=_snippet(source, assign_line),
+                        snippet=snippet(source, assign_line),
                     )
                     calls.append(OutboundCall(
                         kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
@@ -222,29 +198,13 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                         if root_lib in file_imports or lib in file_imports:
                             ev = Evidence(
                                 file=rel, line=assign_line,
-                                snippet=_snippet(source, assign_line),
+                                snippet=snippet(source, assign_line),
                             )
                             calls.append(OutboundCall(
                                 kind=_TRACKED_LIBS.get(lib, "llm_sdk"),
                                 library=lib,
                                 evidence=[ev], confidence=0.7,
                             ))
-
-        # Collect simple string constants: NAME = "literal"
-        str_constants: dict[str, str] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1:
-                target = node.targets[0]
-                if (isinstance(target, ast.Name)
-                        and isinstance(node.value, ast.Constant)
-                        and isinstance(node.value.value, str)):
-                    str_constants[target.id] = node.value.value
-
-        # Scan constant values for model names
-        for val in str_constants.values():
-            m = _MODEL_NAME_RE.fullmatch(val)
-            if m:
-                models_found.add(m.group(0))
 
         # Second pass: find call sites
         for node in ast.walk(tree):
@@ -254,17 +214,8 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
             attr = _call_attr(node)
             ev = Evidence(
                 file=rel, line=node.lineno,
-                snippet=_snippet(source, node.lineno),
+                snippet=snippet(source, node.lineno),
             )
-
-            # Resolve model=VAR keyword args through constants dict
-            for kw in node.keywords:
-                if kw.arg == "model" and isinstance(kw.value, ast.Name):
-                    resolved = str_constants.get(kw.value.id)
-                    if resolved:
-                        m = _MODEL_NAME_RE.fullmatch(resolved)
-                        if m:
-                            models_found.add(m.group(0))
 
             # SDK constructor calls (OpenAI(), Anthropic(), etc.)
             if attr in _SDK_CONSTRUCTORS:
@@ -407,16 +358,13 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
                             dec_line = dec.lineno if hasattr(dec, "lineno") else node.lineno
                             ev = Evidence(
                                 file=rel, line=dec_line,
-                                snippet=_snippet(source, dec_line),
+                                snippet=snippet(source, dec_line),
                             )
                             calls.append(OutboundCall(
                                 kind="observability", library="langsmith",
                                 evidence=[ev], confidence=0.9,
                             ))
                             break
-
-        # Regex scan for URLs and model names
-        _regex_scan(source, rel, calls, models_found)
 
     # Deduplicate by (library, kind) — merge evidence and domains
     deduped: dict[tuple[str, str], OutboundCall] = {}
@@ -439,27 +387,8 @@ def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
 
     unique_calls = list(deduped.values())
 
-    # Build gateway needs
-    has_llm = any(c.kind == "llm_sdk" for c in unique_calls)
-    has_http = any(c.kind == "http" for c in unique_calls)
+    return EgressReport(outbound_calls=unique_calls)
 
-    return EgressReport(
-        outbound_calls=unique_calls,
-        suggested_gateway_needs=SuggestedGatewayNeeds(
-            needs_llm_gateway=has_llm,
-            needs_external_api_gateway=has_http,
-            requested_models=sorted(models_found),
-        ),
-    )
-
-
-def _regex_scan(
-    source: str, rel: str,
-    calls: list[OutboundCall],
-    models_found: set[str],
-) -> None:
-    for m in _MODEL_RE.finditer(source):
-        models_found.add(m.group(1))
 
 
 def _call_attr(node: ast.Call) -> str | None:
@@ -521,8 +450,3 @@ def _extract_fstring_url_domain(node: ast.Call) -> str | None:
     return None
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

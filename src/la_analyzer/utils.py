@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+
+def snippet(source: str, lineno: int, max_len: int = 160) -> str:
+    """Return the source line at lineno (1-based), stripped and truncated."""
+    lines = source.splitlines()
+    if 0 < lineno <= len(lines):
+        return lines[lineno - 1].strip()[:max_len]
+    return ""
+
 # Directories to skip during file discovery
 SKIP_DIRS = {
     ".git", "__pycache__", "node_modules", "venv", ".venv", "env",

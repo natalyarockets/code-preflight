@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from la_analyzer.analyzer.models import APIRoute, Evidence, IOInput, IOOutput
+from la_analyzer.utils import snippet
 
 # HTTP methods recognized on app/router decorators
 _ROUTE_METHODS = {"get", "post", "put", "patch", "delete"}
@@ -81,7 +82,7 @@ def scan_api(
                         format="unknown",
                         evidence=[Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )],
                         confidence=0.85,
                     ))
@@ -98,7 +99,7 @@ def scan_api(
                         format="json",
                         evidence=[Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )],
                         confidence=0.85,
                     ))
@@ -114,7 +115,7 @@ def scan_api(
                         format="unknown",
                         evidence=[Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )],
                         confidence=0.7,
                     ))
@@ -131,7 +132,7 @@ def scan_api(
                         format="unknown",
                         evidence=[Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )],
                         confidence=0.7,
                     ))
@@ -149,7 +150,7 @@ def scan_api(
                     format="json",
                     evidence=[Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )],
                     confidence=0.8,
                 ))
@@ -168,7 +169,7 @@ def scan_api(
                         format="json",
                         evidence=[Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )],
                         confidence=0.8,
                     ))
@@ -366,8 +367,3 @@ def _label_upload(name: str) -> str:
     return _label_underscore(name) + " Upload"
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

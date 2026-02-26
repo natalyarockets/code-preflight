@@ -14,7 +14,8 @@ import logging
 import re
 from pathlib import Path
 
-from la_analyzer.security.models import AgentFinding, AgentScanReport
+from la_analyzer.analyzer.models import Evidence
+from la_analyzer.security.models import SecurityFinding
 
 log = logging.getLogger(__name__)
 
@@ -51,10 +52,19 @@ _OVERPRIVILEGED_TOOLS = {
 }
 
 
+
+class _AgentScanResult(list):
+    """list[SecurityFinding] subclass that exposes .findings for backward compatibility."""
+
+    @property
+    def findings(self) -> "list[SecurityFinding]":
+        return list(self)
+
+
 def scan_agents(
     workspace: Path,
     all_files: list[Path],
-) -> AgentScanReport:
+) -> list[SecurityFinding]:
     """Scan for agent/skill security risks.
 
     Args:
@@ -62,9 +72,9 @@ def scan_agents(
         all_files: All discovered files.
 
     Returns:
-        AgentScanReport with findings.
+        list[SecurityFinding] with all agent-related findings.
     """
-    findings: list[AgentFinding] = []
+    findings: _AgentScanResult = _AgentScanResult()
 
     py_files = [f for f in all_files if f.suffix == ".py"]
 
@@ -88,15 +98,15 @@ def scan_agents(
         except Exception:
             log.debug("Failed to scan Python agent file: %s", rel, exc_info=True)
 
-    return AgentScanReport(findings=findings)
+    return findings
 
 
 # ── Markdown skill files ──────────────────────────────────────────────────
 
 
-def _scan_markdown(fpath: Path, rel: str) -> list[AgentFinding]:
+def _scan_markdown(fpath: Path, rel: str) -> list[SecurityFinding]:
     """Scan a Markdown file for prompt injection and credential risks."""
-    findings: list[AgentFinding] = []
+    findings: list[SecurityFinding] = []
     try:
         content = fpath.read_text(errors="replace")
     except OSError:
@@ -117,13 +127,12 @@ def _scan_markdown(fpath: Path, rel: str) -> list[AgentFinding]:
         # Template variable injection in system prompts
         match = _TEMPLATE_VAR_RE.search(line)
         if match:
-            findings.append(AgentFinding(
+            findings.append(SecurityFinding(
                 category="prompt_injection",
                 severity="high",
                 title="User input template in prompt file",
                 description=f"Template variable `{{{match.group(1)}}}` may allow prompt injection if user-controlled content is interpolated into system instructions.",
-                file=rel, line=i,
-                snippet=line.strip()[:120],
+                evidence=[Evidence(file=rel, line=i, snippet=line.strip()[:120])],
                 recommendation="Sanitize user input before interpolation, or move user content to a separate user message.",
             ))
 
@@ -131,13 +140,12 @@ def _scan_markdown(fpath: Path, rel: str) -> list[AgentFinding]:
         line_lower = line.lower()
         for ref in _DANGEROUS_TOOL_REFS:
             if ref in line_lower:
-                findings.append(AgentFinding(
+                findings.append(SecurityFinding(
                     category="overprivileged_tool",
                     severity="medium",
                     title=f"Dangerous command reference in prompt: `{ref}`",
                     description=f"Prompt file references `{ref}` which could enable destructive operations if the agent acts on it.",
-                    file=rel, line=i,
-                    snippet=line.strip()[:120],
+                    evidence=[Evidence(file=rel, line=i, snippet=line.strip()[:120])],
                     recommendation="Restrict tool access to minimum required operations.",
                 ))
                 break  # One finding per line
@@ -145,13 +153,12 @@ def _scan_markdown(fpath: Path, rel: str) -> list[AgentFinding]:
         # Credential patterns
         for pattern in _CREDENTIAL_PATTERNS:
             if pattern.search(line):
-                findings.append(AgentFinding(
+                findings.append(SecurityFinding(
                     category="credential_exposure",
                     severity="critical",
                     title="Credential pattern in prompt file",
                     description="A credential or API key pattern was found in a prompt/skill file.",
-                    file=rel, line=i,
-                    snippet=line.strip()[:60] + "...",
+                    evidence=[Evidence(file=rel, line=i, snippet=line.strip()[:60] + "...")],
                     recommendation="Move credentials to environment variables or a secrets manager.",
                 ))
                 break
@@ -162,9 +169,9 @@ def _scan_markdown(fpath: Path, rel: str) -> list[AgentFinding]:
 # ── YAML configs ──────────────────────────────────────────────────────────
 
 
-def _scan_yaml(fpath: Path, rel: str) -> list[AgentFinding]:
+def _scan_yaml(fpath: Path, rel: str) -> list[SecurityFinding]:
     """Scan a YAML config file for agent/MCP security risks."""
-    findings: list[AgentFinding] = []
+    findings: list[SecurityFinding] = []
     try:
         import yaml
         content = fpath.read_text(errors="replace")
@@ -188,9 +195,9 @@ def _scan_yaml(fpath: Path, rel: str) -> list[AgentFinding]:
     return findings
 
 
-def _scan_json_config(fpath: Path, rel: str) -> list[AgentFinding]:
+def _scan_json_config(fpath: Path, rel: str) -> list[SecurityFinding]:
     """Scan a JSON config file for agent/MCP security risks."""
-    findings: list[AgentFinding] = []
+    findings: list[SecurityFinding] = []
     try:
         content = fpath.read_text(errors="replace")
         data = json.loads(content)
@@ -215,7 +222,7 @@ def _scan_json_config(fpath: Path, rel: str) -> list[AgentFinding]:
 def _scan_config_dict(
     data: dict,
     rel: str,
-    findings: list[AgentFinding],
+    findings: list[SecurityFinding],
     path: str = "",
 ) -> None:
     """Recursively scan a config dict for agent security issues."""
@@ -227,13 +234,12 @@ def _scan_config_dict(
         if isinstance(value, str):
             for pattern in _CREDENTIAL_PATTERNS:
                 if pattern.search(value):
-                    findings.append(AgentFinding(
+                    findings.append(SecurityFinding(
                         category="credential_exposure",
                         severity="critical",
                         title=f"Plaintext credential in config: `{current_path}`",
                         description=f"Config key `{current_path}` contains what appears to be a credential or API key.",
-                        file=rel,
-                        snippet=f"{key}: {value[:20]}...",
+                        evidence=[Evidence(file=rel, line=0, snippet=f"{key}: {value[:20]}...")],
                         recommendation="Use environment variables or a secrets manager instead of plaintext credentials.",
                     ))
                     break
@@ -242,26 +248,24 @@ def _scan_config_dict(
         if key_lower in _PERMISSION_KEYS and isinstance(value, list):
             for tool_name in value:
                 if isinstance(tool_name, str) and tool_name.lower() in _OVERPRIVILEGED_TOOLS:
-                    findings.append(AgentFinding(
+                    findings.append(SecurityFinding(
                         category="overprivileged_tool",
                         severity="high",
                         title=f"Overprivileged tool in config: `{tool_name}`",
                         description=f"Tool `{tool_name}` in `{current_path}` grants potentially dangerous capabilities.",
-                        file=rel,
-                        snippet=f"{key}: [..., {tool_name}, ...]",
+                        evidence=[Evidence(file=rel, line=0, snippet=f"{key}: [..., {tool_name}, ...]")],
                         recommendation="Restrict tool access to the minimum set required.",
                     ))
 
         # Check for wildcard / unrestricted permissions
         if key_lower in _PERMISSION_KEYS:
             if value == "*" or value == ["*"]:
-                findings.append(AgentFinding(
+                findings.append(SecurityFinding(
                     category="unscoped_permission",
                     severity="high",
                     title=f"Wildcard permission: `{current_path}`",
                     description=f"`{current_path}` grants unrestricted access. This allows the agent to use any tool.",
-                    file=rel,
-                    snippet=f"{key}: {value}",
+                    evidence=[Evidence(file=rel, line=0, snippet=f"{key}: {value}")],
                     recommendation="Explicitly list only the tools/permissions needed.",
                 ))
 
@@ -274,13 +278,12 @@ def _scan_config_dict(
                         for k in server_config
                     )
                     if not has_guardrail:
-                        findings.append(AgentFinding(
+                        findings.append(SecurityFinding(
                             category="missing_guardrail",
                             severity="medium",
                             title=f"No permission guardrails on server: `{server_name}`",
                             description=f"MCP server `{server_name}` has no tool restrictions or permission scoping.",
-                            file=rel,
-                            snippet=f"{server_name}: {{...}}",
+                            evidence=[Evidence(file=rel, line=0, snippet=f"{server_name}: {{...}}")],
                             recommendation="Add allowed_tools or permissions to restrict server capabilities.",
                         ))
 
@@ -292,9 +295,9 @@ def _scan_config_dict(
 # ── Python agent code ────────────────────────────────────────────────────
 
 
-def _scan_python_agent(fpath: Path, rel: str) -> list[AgentFinding]:
+def _scan_python_agent(fpath: Path, rel: str) -> list[SecurityFinding]:
     """Scan Python code for agent-specific security patterns."""
-    findings: list[AgentFinding] = []
+    findings: list[SecurityFinding] = []
     try:
         source = fpath.read_text(errors="replace")
         tree = ast.parse(source, filename=rel)
@@ -340,13 +343,12 @@ def _scan_python_agent(fpath: Path, rel: str) -> list[AgentFinding]:
                             "os.system", "os.popen", "exec", "eval",
                         ):
                             snippet = lines[child.lineno - 1].strip() if child.lineno <= len(lines) else ""
-                            findings.append(AgentFinding(
+                            findings.append(SecurityFinding(
                                 category="overprivileged_tool",
                                 severity="critical",
                                 title=f"@tool function calls `{call_name}`",
                                 description=f"Tool function `{node.name}` calls `{call_name}`, which could execute arbitrary commands from agent input.",
-                                file=rel, line=child.lineno,
-                                snippet=snippet[:120],
+                                evidence=[Evidence(file=rel, line=child.lineno, snippet=snippet[:120])],
                                 recommendation="Validate and sanitize inputs, or use a restricted command allowlist.",
                             ))
 
@@ -365,13 +367,12 @@ def _scan_python_agent(fpath: Path, rel: str) -> list[AgentFinding]:
                                     for kw_name in ("user", "input", "query", "message", "prompt")
                                 ):
                                     snippet = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    findings.append(AgentFinding(
+                                    findings.append(SecurityFinding(
                                         category="prompt_injection",
                                         severity="high",
                                         title="User input in system message construction",
                                         description=f"Variable `{val.value.id}` appears to be user-controlled and is interpolated into a message.",
-                                        file=rel, line=node.lineno,
-                                        snippet=snippet[:120],
+                                        evidence=[Evidence(file=rel, line=node.lineno, snippet=snippet[:120])],
                                         recommendation="Separate system instructions from user input. Use a dedicated user message role.",
                                     ))
 

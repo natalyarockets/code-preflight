@@ -49,7 +49,7 @@ def _pip_audit_scan(workspace: Path, requirements: list[str]) -> list[SecurityFi
         return findings
 
     # Write temporary requirements file outside the workspace
-    tmp_dir = tempfile.mkdtemp(prefix="livingapps_audit_")
+    tmp_dir = tempfile.mkdtemp(prefix="la_audit_")
     req_path = Path(tmp_dir) / "requirements.txt"
     try:
         req_path.write_text("\n".join(requirements) + "\n")

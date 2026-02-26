@@ -25,8 +25,6 @@ response = client.chat.completions.create(
 ''')
         report = scan_egress(ws, [f])
         assert any(c.kind == "llm_sdk" and c.library == "openai" for c in report.outbound_calls)
-        assert report.suggested_gateway_needs.needs_llm_gateway is True
-        assert "gpt-4o" in report.suggested_gateway_needs.requested_models
 
 
 def test_detects_anthropic_usage():
@@ -42,7 +40,6 @@ msg = client.messages.create(
 ''')
         report = scan_egress(ws, [f])
         assert any(c.kind == "llm_sdk" and c.library == "anthropic" for c in report.outbound_calls)
-        assert report.suggested_gateway_needs.needs_llm_gateway is True
 
 
 def test_detects_requests_get():
@@ -55,7 +52,6 @@ data = resp.json()
 ''')
         report = scan_egress(ws, [f])
         assert any(c.kind == "http" and c.library == "requests" for c in report.outbound_calls)
-        assert report.suggested_gateway_needs.needs_external_api_gateway is True
 
 
 def test_detects_httpx():
@@ -132,11 +128,11 @@ client = openai.OpenAI()
 resp = client.embeddings.create(model=EMBEDDING_MODEL, input="hello")
 ''')
         report = scan_egress(ws, [f])
-        assert "text-embedding-3-small" in report.suggested_gateway_needs.requested_models
+        assert any(c.kind == "llm_sdk" and c.library == "openai" for c in report.outbound_calls)
 
 
 def test_detects_embedding_model_literal():
-    """Embedding model names in string literals should be detected."""
+    """Embedding model literal call should register openai egress."""
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)
         f = _write_py(ws, "embed.py", '''
@@ -145,17 +141,7 @@ client = openai.OpenAI()
 resp = client.embeddings.create(model="text-embedding-3-small", input="hello")
 ''')
         report = scan_egress(ws, [f])
-        assert "text-embedding-3-small" in report.suggested_gateway_needs.requested_models
-
-
-def test_detects_gemini_model():
-    with tempfile.TemporaryDirectory() as d:
-        ws = Path(d)
-        f = _write_py(ws, "app.py", '''
-MODEL = "gemini-1.5-pro"
-''')
-        report = scan_egress(ws, [f])
-        assert "gemini-1.5-pro" in report.suggested_gateway_needs.requested_models
+        assert any(c.kind == "llm_sdk" and c.library == "openai" for c in report.outbound_calls)
 
 
 def test_dynamic_sdk_class_variable():
@@ -257,7 +243,6 @@ def add(a, b):
 ''')
         report = scan_egress(ws, [f])
         assert len(report.outbound_calls) == 0
-        assert report.suggested_gateway_needs.needs_llm_gateway is False
 
 
 def test_detects_sentry_sdk_observability():

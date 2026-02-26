@@ -83,6 +83,17 @@ class TestQueryPromptInjection:
         assert len(findings) == 1
         assert findings[0].severity == "medium"
 
+    def test_db_result_is_medium_severity(self):
+        g = EffectGraph()
+        g.add_node(src_node("s1", SourceTrust.DB_RESULT))
+        g.add_node(sink_node("snk1", SinkKind.LLM_PROMPT))
+        g.add_edge(EffectEdge(src="s1", dst="snk1", kind="data_flows_to",
+                               file="app.py", line=5))
+
+        findings = query_prompt_injection(g)
+        assert len(findings) == 1
+        assert findings[0].severity == "medium"
+
     def test_no_path_no_finding(self):
         g = EffectGraph()
         g.add_node(src_node("s1", SourceTrust.USER_CONTROLLED))
@@ -207,13 +218,16 @@ class TestQuerySqlSeverityUpgrade:
         g = EffectGraph()
         g.add_node(src_node("src1", SourceTrust.HEADER_CONTROLLED,
                              file="db.py", line=5))
+        g.add_node(sink_node("dbsink", SinkKind.DB_WRITE, service="DB", file="db.py", line=30))
+        g.add_edge(EffectEdge(src="src1", dst="dbsink", kind="data_flows_to",
+                               file="db.py", line=15))
 
         existing = [SecurityFinding(
             category="injection",
             severity="medium",
             title="B608: Possible SQL injection",
             description="SQL injection in db.py",
-            evidence=[Evidence(file="db.py", line=20, snippet="cursor.execute(query)")],
+            evidence=[Evidence(file="db.py", line=20, snippet="query = f'...'")],
         )]
 
         upgraded = query_sql_severity_upgrade(g, existing)
@@ -224,6 +238,9 @@ class TestQuerySqlSeverityUpgrade:
         g = EffectGraph()
         g.add_node(src_node("src1", SourceTrust.HEADER_CONTROLLED,
                              file="db.py", line=5))
+        g.add_node(sink_node("dbsink", SinkKind.DB_WRITE, service="DB", file="db.py", line=30))
+        g.add_edge(EffectEdge(src="src1", dst="dbsink", kind="data_flows_to",
+                               file="db.py", line=15))
 
         existing = [SecurityFinding(
             category="injection",
@@ -254,6 +271,9 @@ class TestQuerySqlSeverityUpgrade:
     def test_non_sql_not_upgraded(self):
         g = EffectGraph()
         g.add_node(src_node("src1", SourceTrust.HEADER_CONTROLLED, file="app.py", line=5))
+        g.add_node(sink_node("dbsink", SinkKind.DB_WRITE, service="DB", file="app.py", line=25))
+        g.add_edge(EffectEdge(src="src1", dst="dbsink", kind="data_flows_to",
+                               file="app.py", line=10))
 
         existing = [SecurityFinding(
             category="injection",
@@ -263,6 +283,20 @@ class TestQuerySqlSeverityUpgrade:
             evidence=[Evidence(file="app.py", line=20, snippet="")],
         )]
 
+        upgraded = query_sql_severity_upgrade(g, existing)
+        assert upgraded == []
+
+    def test_no_upgrade_without_risky_source_to_db_sink_path(self):
+        g = EffectGraph()
+        g.add_node(src_node("src1", SourceTrust.HEADER_CONTROLLED, file="db.py", line=5))
+        # No DB sink path
+        existing = [SecurityFinding(
+            category="injection",
+            severity="medium",
+            title="B608: Possible SQL injection",
+            description="SQL",
+            evidence=[Evidence(file="db.py", line=20, snippet="query = f'...'")],
+        )]
         upgraded = query_sql_severity_upgrade(g, existing)
         assert upgraded == []
 

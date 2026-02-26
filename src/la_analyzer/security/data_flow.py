@@ -6,7 +6,9 @@ import ast
 import re
 from pathlib import Path
 
-from la_analyzer.security.models import Evidence, DataFlowRisk
+from la_analyzer.analyzer.models import Evidence
+from la_analyzer.security.models import SecurityFinding
+from la_analyzer.utils import snippet
 
 # Names that indicate LLM SDK usage
 _LLM_CALL_METHODS = {"create", "generate", "complete", "chat", "invoke", "ainvoke"}
@@ -30,6 +32,21 @@ _HTTP_SINK_METHODS = {"post", "put", "patch", "request", "send"}
 _FILE_WRITE_METHODS = {"to_csv", "to_json", "to_excel", "to_parquet", "write",
                         "write_text", "write_bytes", "dump"}
 
+# Cloud / vector-database / NoSQL SDK write methods.
+# These are specific enough to indicate a write to an external store
+# when one of _CLOUD_DB_LIBS is imported (the import gate prevents false positives).
+_DB_WRITE_METHODS = {
+    "upsert", "insert", "insert_one", "insert_many", "put_item",
+    "add_documents", "add_texts", "from_documents", "from_texts",
+    "bulk_write",
+}
+# SDK module roots that indicate cloud/database egress (not pure-Python libs)
+_CLOUD_DB_LIBS = {
+    "pinecone", "pymongo", "motor", "redis", "weaviate", "chromadb",
+    "qdrant_client", "elasticsearch", "opensearchpy", "supabase",
+    "psycopg2", "asyncpg", "sqlalchemy", "databases",
+}
+
 # PII-indicative field names (subset for data flow context)
 _PII_FIELD_RE = re.compile(
     r"(?:(?<=_)|\b)(email|ssn|social_security|phone|address|dob|date_of_birth|"
@@ -44,7 +61,7 @@ def scan_data_flow(
     workspace: Path,
     py_files: list[Path],
     data_classifications: list | None = None,
-) -> list[DataFlowRisk]:
+) -> list[SecurityFinding]:
     """Analyze data flow from file reads to LLM calls.
 
     Args:
@@ -52,8 +69,10 @@ def scan_data_flow(
             from classify_data(). When provided, detected PII/financial/health
             field names are merged into pii_fields_in_path for richer reports.
     """
-    risks: list[DataFlowRisk] = []
-    seen_risks: set[tuple[str, int]] = set()  # (file, line) to deduplicate across scopes
+    risks: list[SecurityFinding] = []
+    # Dedup key: (file, line, category, sink) — sink discriminates findings at the
+    # same line that differ by target (e.g. output_file vs http at line 42).
+    seen_risks: set[tuple[str, int, str, str]] = set()
 
     # Build a set of classified field names from the data classifier
     classified_fields: set[str] = set()
@@ -93,9 +112,8 @@ def scan_data_flow(
             _analyze_scope(scope, source, rel, has_llm, file_imports, risks, classified_fields, seen_risks)
 
         # Cross-function analysis: detect file reads in one function flowing
-        # to LLM calls in another via return values / function calls.
-        if has_llm:
-            _analyze_cross_function(tree, source, rel, file_imports, risks, seen_risks)
+        # to external sinks (LLM, HTTP, output file) in another.
+        _analyze_cross_function(tree, source, rel, file_imports, risks, seen_risks)
 
     return risks
 
@@ -106,9 +124,9 @@ def _analyze_scope(
     rel: str,
     has_llm: bool,
     file_imports: set[str],
-    risks: list[DataFlowRisk],
+    risks: list[SecurityFinding],
     classified_fields: set[str] | None = None,
-    seen_risks: set[tuple[str, int]] | None = None,
+    seen_risks: set[tuple[str, int, str, str]] | None = None,
 ) -> None:
     """Analyze a single scope (function or module) for data flow patterns."""
     # Track variables that hold file data
@@ -229,17 +247,19 @@ def _analyze_scope(
                         if var in pv or pv.startswith(f"{var}["):
                             field = pv.split("[")[-1].rstrip("]") if "[" in pv else pv
                             pii_in_path.append(field)
-                severity = "critical" if pii_in_path else "high"
-                key = (rel, node.lineno)
+                severity = "high" if pii_in_path else "medium"
+                key = (rel, node.lineno, "data_flow", "http")
                 if seen_risks is None or key not in seen_risks:
                     if seen_risks is not None:
                         seen_risks.add(key)
                     source_desc = _resolve_source(tainted, file_reads)
-                    ev = Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
-                    risks.append(DataFlowRisk(
+                    ev = Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
+                    risks.append(SecurityFinding(
+                        category="data_flow",
+                        title="File data flows to HTTP API",
                         data_source=source_desc,
                         data_sink="HTTP API call",
-                        pii_fields_in_path=pii_in_path,
+                        pii_fields=pii_in_path,
                         description=f"File/PII data ({', '.join(sorted(tainted))}) sent via HTTP {method}()",
                         evidence=[ev],
                         severity=severity,
@@ -266,18 +286,57 @@ def _analyze_scope(
                         if var in pv or pv.startswith(f"{var}["):
                             field = pv.split("[")[-1].rstrip("]") if "[" in pv else pv
                             pii_in_path.append(field)
-                severity = "high" if pii_in_path else "medium"
-                key = (rel, node.lineno)
+                severity = "high" if pii_in_path else "low"
+                key = (rel, node.lineno, "data_flow", "output_file")
                 if seen_risks is None or key not in seen_risks:
                     if seen_risks is not None:
                         seen_risks.add(key)
                     source_desc = _resolve_source(tainted, file_reads)
-                    ev = Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
-                    risks.append(DataFlowRisk(
+                    ev = Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
+                    risks.append(SecurityFinding(
+                        category="data_flow",
+                        title="File data written to output",
                         data_source=source_desc,
                         data_sink="output file",
-                        pii_fields_in_path=pii_in_path,
-                        description=f"Sensitive data ({', '.join(sorted(tainted))}) written to output file via {method}()",
+                        pii_fields=pii_in_path,
+                        description=f"File data ({', '.join(sorted(tainted))}) written to output file via {method}()",
+                        evidence=[ev],
+                        severity=severity,
+                    ))
+
+    # ── Database / cloud SDK sink detection ──────────────────────────────
+    has_db_lib = bool(file_imports & _CLOUD_DB_LIBS)
+    if has_db_lib and (file_data_vars or pii_vars):
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in _DB_WRITE_METHODS:
+                continue
+            call_names = _collect_names(node)
+            tainted = call_names & (file_data_vars | {v.split("[")[0] for v in pii_vars})
+            if tainted:
+                pii_in_path = []
+                for var in tainted:
+                    for pv in pii_vars:
+                        if var in pv or pv.startswith(f"{var}["):
+                            field = pv.split("[")[-1].rstrip("]") if "[" in pv else pv
+                            pii_in_path.append(field)
+                severity = "high" if pii_in_path else "medium"
+                key = (rel, node.lineno, "data_flow", "database")
+                if seen_risks is None or key not in seen_risks:
+                    if seen_risks is not None:
+                        seen_risks.add(key)
+                    source_desc = _resolve_source(tainted, file_reads)
+                    ev = Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
+                    risks.append(SecurityFinding(
+                        category="data_flow",
+                        title="File data flows to database/cloud API",
+                        data_source=source_desc,
+                        data_sink="database/cloud API",
+                        pii_fields=pii_in_path,
+                        description=f"File/PII data ({', '.join(sorted(tainted))}) sent to cloud/database via {node.func.attr}()",
                         evidence=[ev],
                         severity=severity,
                     ))
@@ -289,7 +348,7 @@ def _analyze_scope(
     for call_node, call_line in llm_calls:
         # Gather all names referenced in the LLM call args
         call_names = _collect_names(call_node)
-        ev = Evidence(file=rel, line=call_line, snippet=_snippet(source, call_line))
+        ev = Evidence(file=rel, line=call_line, snippet=snippet(source, call_line))
 
         # Check 1: file data variable directly in LLM call
         file_vars_in_call = call_names & file_data_vars
@@ -312,15 +371,17 @@ def _analyze_scope(
                     source_desc = f"file: {path or 'unknown'}"
                     break
 
-            severity = "critical" if pii_in_path else "high"
-            key = (rel, call_line)
+            severity = "high" if pii_in_path else "medium"
+            key = (rel, call_line, "data_flow", "llm")
             if seen_risks is None or key not in seen_risks:
                 if seen_risks is not None:
                     seen_risks.add(key)
-                risks.append(DataFlowRisk(
+                risks.append(SecurityFinding(
+                    category="data_flow",
+                    title="File data flows to LLM",
                     data_source=source_desc,
                     data_sink="LLM API call",
-                    pii_fields_in_path=pii_in_path,
+                    pii_fields=pii_in_path,
                     description=f"File data ({', '.join(file_vars_in_call)}) is passed to an LLM API call",
                     evidence=[ev],
                     severity=severity,
@@ -331,18 +392,20 @@ def _analyze_scope(
         for fstr_vars, fstr_line in fstrings_in_call:
             pii_in_fstr = [v for v in fstr_vars if _PII_FIELD_RE.search(v)]
             if pii_in_fstr:
-                key2 = (rel, fstr_line)
+                key2 = (rel, fstr_line, "data_flow", "llm_fstr")
                 if seen_risks is None or key2 not in seen_risks:
                     if seen_risks is not None:
                         seen_risks.add(key2)
-                    ev2 = Evidence(file=rel, line=fstr_line, snippet=_snippet(source, fstr_line))
-                    risks.append(DataFlowRisk(
+                    ev2 = Evidence(file=rel, line=fstr_line, snippet=snippet(source, fstr_line))
+                    risks.append(SecurityFinding(
+                        category="data_flow",
+                        title="File data in LLM prompt",
                         data_source="variable in f-string",
                         data_sink="LLM prompt",
-                        pii_fields_in_path=pii_in_fstr,
+                        pii_fields=pii_in_fstr,
                         description=f"PII-named variables ({', '.join(pii_in_fstr)}) embedded in LLM prompt string",
                         evidence=[ev2],
-                        severity="critical",
+                        severity="high",
                     ))
 
         # Check 3: f-strings with PII fields anywhere in the function scope
@@ -357,18 +420,20 @@ def _analyze_scope(
         for fstr_vars, fstr_line in scope_fstrings:
             pii_in_scope = [v for v in fstr_vars if _PII_FIELD_RE.search(v)]
             if pii_in_scope:
-                key3 = (rel, fstr_line)
+                key3 = (rel, fstr_line, "data_flow", "llm_scope_fstr")
                 if seen_risks is None or key3 not in seen_risks:
                     if seen_risks is not None:
                         seen_risks.add(key3)
-                    ev3 = Evidence(file=rel, line=fstr_line, snippet=_snippet(source, fstr_line))
-                    risks.append(DataFlowRisk(
+                    ev3 = Evidence(file=rel, line=fstr_line, snippet=snippet(source, fstr_line))
+                    risks.append(SecurityFinding(
+                        category="data_flow",
+                        title="File data in LLM prompt",
                         data_source="formatted data in scope",
                         data_sink="LLM prompt (same function)",
-                        pii_fields_in_path=pii_in_scope,
+                        pii_fields=pii_in_scope,
                         description=f"Sensitive fields ({', '.join(pii_in_scope)}) formatted in function that calls LLM",
                         evidence=[ev3],
-                        severity="critical",
+                        severity="high",
                     ))
 
         # Check 4: direct open().read() chained into messages
@@ -376,19 +441,43 @@ def _analyze_scope(
             if isinstance(arg_node, ast.Call):
                 inner_name = _full_call_name(arg_node)
                 if "read" in inner_name and ("open" in inner_name or "read_text" in inner_name):
-                    key3 = (rel, arg_node.lineno)
+                    key3 = (rel, arg_node.lineno, "data_flow", "llm_inline")
                     if seen_risks is None or key3 not in seen_risks:
                         if seen_risks is not None:
                             seen_risks.add(key3)
-                        ev3 = Evidence(file=rel, line=arg_node.lineno, snippet=_snippet(source, arg_node.lineno))
-                        risks.append(DataFlowRisk(
+                        ev3 = Evidence(file=rel, line=arg_node.lineno, snippet=snippet(source, arg_node.lineno))
+                        risks.append(SecurityFinding(
+                            category="data_flow",
+                            title="File data in LLM prompt",
                             data_source="inline file read",
                             data_sink="LLM prompt",
-                            pii_fields_in_path=[],
+                            pii_fields=[],
                             description="Entire file contents read directly into LLM call arguments",
                             evidence=[ev3],
-                            severity="high",
+                            severity="medium",
                         ))
+
+
+def _sink_label(sink_kind: str) -> str:
+    """Human-readable label for a sink kind."""
+    return {
+        "llm": "LLM API call",
+        "http": "HTTP API call",
+        "database": "database/cloud API",
+        "output_file": "output file",
+    }.get(sink_kind, sink_kind)
+
+
+def _sink_severity(sink_kind: str, has_pii: bool) -> str:
+    """Severity based on data sensitivity and sink type.
+
+    HIGH:   PII confirmed flowing to any sink
+    MEDIUM: no PII, external service (LLM, HTTP, database/cloud)
+    LOW:    no PII, local output file
+    """
+    if has_pii:
+        return "high"
+    return "low" if sink_kind == "output_file" else "medium"
 
 
 def _analyze_cross_function(
@@ -396,25 +485,34 @@ def _analyze_cross_function(
     source: str,
     rel: str,
     file_imports: set[str],
-    risks: list[DataFlowRisk],
-    seen_risks: set[tuple[str, int]],
+    risks: list[SecurityFinding],
+    seen_risks: set[tuple[str, int, str, str]],
 ) -> None:
-    """Detect data flow across function boundaries.
+    """Detect data flow across function boundaries to any external sink.
 
-    Catches the common pattern:
+    Catches patterns like:
         def load_data():
             return pd.read_csv("users.csv")
         def analyze():
             data = load_data()
             client.chat.completions.create(messages=[{"content": str(data)}])
 
+    or:
+        def main():
+            data = load_data()
+            requests.post(url, json={"payload": data})
+
     Strategy: find functions that return file data, then check if their return
-    values are used in functions that call LLMs.
+    values are used in functions that send to any external sink (LLM, HTTP, output file).
     """
+    has_http_lib = bool(file_imports & _HTTP_LIBS)
+    has_db_lib = bool(file_imports & _CLOUD_DB_LIBS)
+
     # Pass 1: identify functions that read files and return data
     file_reader_funcs: set[str] = set()
-    # Pass 2: identify functions that call LLMs
-    llm_caller_funcs: dict[str, list[int]] = {}  # func_name → [call lines]
+    # Pass 2: identify functions that call any external sink
+    # Maps func_name → list of (sink_kind, call_line)
+    external_sink_funcs: dict[str, list[tuple[str, int]]] = {}
 
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -422,36 +520,56 @@ def _analyze_cross_function(
         func_name = node.name
         has_file_read = False
         has_return = False
-        llm_lines: list[int] = []
+        sink_calls: list[tuple[str, int]] = []
 
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
                 call_name = _full_call_name(child)
                 call_parts = set(call_name.split("."))
+                # File reader detection
                 if call_parts & _FILE_READ_FUNCS:
                     has_file_read = True
+                # LLM sink
                 method_name = call_name.rsplit(".", 1)[-1]
                 if method_name in _LLM_CALL_METHODS:
-                    llm_lines.append(child.lineno)
+                    if not (method_name in ("invoke", "ainvoke") and _is_graph_runtime_call(child)):
+                        sink_calls.append(("llm", child.lineno))
+                # HTTP sink
+                if (has_http_lib
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr in _HTTP_SINK_METHODS):
+                    receiver = None
+                    if isinstance(child.func.value, ast.Name):
+                        receiver = child.func.value.id
+                    if receiver in _HTTP_RECEIVERS:
+                        sink_calls.append(("http", child.lineno))
+                # Database / cloud SDK sink
+                if (has_db_lib
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr in _DB_WRITE_METHODS):
+                    sink_calls.append(("database", child.lineno))
+                # Output file sink
+                if (isinstance(child.func, ast.Attribute)
+                        and child.func.attr in _FILE_WRITE_METHODS):
+                    sink_calls.append(("output_file", child.lineno))
             if isinstance(child, ast.Return) and child.value is not None:
                 has_return = True
 
         if has_file_read and has_return:
             file_reader_funcs.add(func_name)
-        if llm_lines:
-            llm_caller_funcs[func_name] = llm_lines
+        if sink_calls:
+            external_sink_funcs[func_name] = sink_calls
 
-    if not file_reader_funcs or not llm_caller_funcs:
+    if not file_reader_funcs or not external_sink_funcs:
         return
 
-    # Pass 3: in LLM-calling functions, check if they call any file-reader function
+    # Pass 3: in sink-calling functions, check if they also call a file-reader function
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if node.name not in llm_caller_funcs:
+        if node.name not in external_sink_funcs:
             continue
 
-        # Collect all function calls in this scope
         called_funcs: set[str] = set()
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
@@ -460,32 +578,33 @@ def _analyze_cross_function(
 
         overlap = called_funcs & file_reader_funcs
         if overlap:
-            for llm_line in llm_caller_funcs[node.name]:
-                key = (rel, llm_line)
+            for sink_kind, sink_line in external_sink_funcs[node.name]:
+                key = (rel, sink_line, "data_flow", sink_kind)
                 if key not in seen_risks:
                     seen_risks.add(key)
-                    ev = Evidence(file=rel, line=llm_line, snippet=_snippet(source, llm_line))
-                    risks.append(DataFlowRisk(
+                    ev = Evidence(file=rel, line=sink_line, snippet=snippet(source, sink_line))
+                    label = _sink_label(sink_kind)
+                    severity = _sink_severity(sink_kind, has_pii=False)
+                    risks.append(SecurityFinding(
+                        category="data_flow",
+                        title=f"File data flows to {label}",
                         data_source=f"file data via {', '.join(sorted(overlap))}()",
-                        data_sink="LLM API call",
-                        pii_fields_in_path=[],
+                        data_sink=label,
+                        pii_fields=[],
                         description=(
                             f"Function {node.name}() calls {', '.join(sorted(overlap))}() "
-                            f"(which reads files) and passes data to an LLM"
+                            f"(which reads files) and sends data to {label}"
                         ),
                         evidence=[ev],
-                        severity="high",
+                        severity=severity,
                     ))
 
-    # Pass 4: detect file data flowing via parameters across functions
-    # Pattern: main() calls load_data() → passes result as arg to analyze(data) → LLM call
-    # Find all top-level functions that are neither file-readers nor LLM-callers
-    # (orchestrator functions like main()) and check if they bridge the two.
+    # Pass 4: detect file data flowing via parameters across functions.
+    # Pattern: main() calls load_data() → passes result as arg to analyze(data) → external sink.
+    # Includes multi-role orchestrators (functions that both write output directly AND pass file
+    # data to other sink-calling functions) — duplicates are prevented by the dedup key.
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        # Skip functions already handled in pass 3 (direct overlap)
-        if node.name in llm_caller_funcs:
             continue
 
         # Seed: variables that directly receive return values from file-reader functions.
@@ -510,14 +629,12 @@ def _analyze_cross_function(
         while changed:
             changed = False
             for child in ast.walk(node):
-                # Assignment: rhs references a tainted variable
                 if isinstance(child, ast.Assign) and len(child.targets) == 1:
                     var_name = _target_name(child.targets[0])
                     if var_name and var_name not in file_data_vars:
                         if _collect_names(child.value) & file_data_vars:
                             file_data_vars.add(var_name)
                             changed = True
-                # list.extend(tainted) / list.append(tainted)
                 if isinstance(child, ast.Expr) and isinstance(child.value, ast.Call):
                     call = child.value
                     if (isinstance(call.func, ast.Attribute)
@@ -532,36 +649,39 @@ def _analyze_cross_function(
                                 file_data_vars.add(list_var)
                                 changed = True
 
-        # Check if any file data var is passed as argument to an LLM-calling function
+        # Check if any file data var is passed as argument to an external-sink-calling function
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
                 continue
             if not isinstance(child.func, ast.Name):
                 continue
             called_name = child.func.id
-            if called_name not in llm_caller_funcs:
+            if called_name not in external_sink_funcs:
                 continue
-            # Check if any argument is a file data var
             arg_names = {a.id for a in child.args if isinstance(a, ast.Name)}
             kw_names = {kw.value.id for kw in child.keywords
                         if isinstance(kw.value, ast.Name)}
             passed_data = (arg_names | kw_names) & file_data_vars
             if passed_data:
-                for llm_line in llm_caller_funcs[called_name]:
-                    key = (rel, llm_line)
+                for sink_kind, sink_line in external_sink_funcs[called_name]:
+                    key = (rel, sink_line, "data_flow", sink_kind)
                     if key not in seen_risks:
                         seen_risks.add(key)
-                        ev = Evidence(file=rel, line=llm_line, snippet=_snippet(source, llm_line))
-                        risks.append(DataFlowRisk(
+                        ev = Evidence(file=rel, line=sink_line, snippet=snippet(source, sink_line))
+                        label = _sink_label(sink_kind)
+                        severity = _sink_severity(sink_kind, has_pii=False)
+                        risks.append(SecurityFinding(
+                            category="data_flow",
+                            title=f"File data flows to {label}",
                             data_source=f"file data via parameter ({', '.join(sorted(passed_data))})",
-                            data_sink="LLM API call",
-                            pii_fields_in_path=[],
+                            data_sink=label,
+                            pii_fields=[],
                             description=(
                                 f"File data from {', '.join(sorted(file_reader_funcs))}() "
-                                f"flows via parameter to {called_name}() which calls an LLM"
+                                f"flows via parameter to {called_name}() which calls {label}"
                             ),
                             evidence=[ev],
-                            severity="high",
+                            severity=severity,
                         ))
 
 
@@ -712,8 +832,3 @@ def _is_graph_runtime_call(node: ast.Call) -> bool:
     return False
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

@@ -289,7 +289,7 @@ response = client.chat.completions.create(
 ''')
         risks = scan_data_flow(ws, [f])
         assert len(risks) >= 1
-        assert any(r.severity in ("high", "critical") for r in risks)
+        assert any(r.severity in ("high", "medium") for r in risks)
 
 
 def test_detects_pii_in_llm_prompt():
@@ -995,8 +995,8 @@ def test_gate_hardcoded_key_triggers_review():
         assert report.requires_review is True
 
 
-def test_ir_findings_in_security_report():
-    """IR findings should be present in SecurityReport.ir_findings."""
+def test_ir_findings_are_merged_and_tagged_in_security_report():
+    """IR findings should be merged into canonical findings and tagged with origin."""
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)
         # FastAPI route with no auth dependency
@@ -1010,8 +1010,10 @@ async def get_data():
     return {"data": "public"}
 ''')
         report = run_security_review(workspace_dir=ws)
-        # IR findings should be populated
-        assert hasattr(report, "ir_findings")
-        # Route should be detected as unauthenticated
-        auth_findings = [f for f in report.ir_findings if f.category == "auth"]
+        assert report.ir_query_count >= 1
+        # Route should be detected as unauthenticated in the canonical findings stream
+        auth_findings = [
+            f for f in report.findings
+            if f.category == "auth" and getattr(f, "origin", None) == "ir_query"
+        ]
         assert len(auth_findings) >= 1

@@ -98,14 +98,9 @@ def _render_summary_card(result: ScanResult) -> str:
 
     lines.append("## Security Summary\n")
 
-    # Gate decision
+    # Gate decision — wording comes from the model, not the renderer
     if s:
-        if s.deploy_blocked:
-            lines.append("> **BLOCKED** -- Critical findings should be resolved before deployment.\n")
-        elif s.requires_review:
-            lines.append("> **REVIEW REQUIRED** -- High-severity findings should be reviewed.\n")
-        else:
-            lines.append("> **PASS** -- No critical or high-severity findings.\n")
+        lines.append(f"> **{s.gate_message}**\n")
 
         # Severity counts
         lines.append(
@@ -292,27 +287,26 @@ def _render_security_findings(result: ScanResult) -> str:
     if not s:
         return ""
 
-    lines: list[str] = []
-
-    has_content = (
-        s.findings or s.data_flow_risks or s.credential_leak_risks
-        or s.data_classifications
-        or (s.agent_scan and s.agent_scan.findings)
-    )
-    if not has_content:
+    if not s.findings and not s.data_classifications:
         return ""
 
+    lines: list[str] = []
     lines.append("---\n")
     lines.append("## Security Findings\n")
 
-    # Code / vuln / resource findings
+    # All findings in one sorted pass — category-specific inline extras per type
     if s.findings:
-        for f in sorted(s.findings, key=lambda x: sev_order(x.severity)):
+        for f in sorted(s.findings, key=lambda x: (sev_order(x.severity), x.category)):
             icon = _sev_icon(f.severity)
             title = strip_bandit_prefix(f.title)
             lines.append(f"### {icon} {title}\n")
             lines.append(f"**Severity**: {f.severity} | **Category**: {f.category}\n")
             lines.append(f"{f.description}\n")
+            if f.category == "data_flow" and f.data_sink:
+                pii = ", ".join(f"`{p}`" for p in f.pii_fields) if f.pii_fields else "none"
+                lines.append(f"**Data source**: {f.data_source} | **Sink**: {f.data_sink} | **PII**: {pii}\n")
+            elif f.category == "credential_leak" and f.credential_name:
+                lines.append(f"**Credential**: `{f.credential_name}` -> **{leak_label(f.leak_target or '')}**\n")
             if f.recommendation:
                 lines.append(f"**Recommendation**: {f.recommendation}\n")
             if f.evidence:
@@ -324,44 +318,8 @@ def _render_security_findings(result: ScanResult) -> str:
     if s.data_classifications:
         lines.append("### Data Classifications\n")
         for dc in s.data_classifications:
-            fields = ", ".join(f"`{f}`" for f in dc.fields_detected[:10])
+            fields = ", ".join(f"`{fld}`" for fld in dc.fields_detected[:10])
             lines.append(f"- **{dc.category}** ({dc.confidence:.0%}): {fields}")
-        lines.append("")
-
-    # Data flow risks
-    if s.data_flow_risks:
-        lines.append("### Data Flow Risks\n")
-        for df in sorted(s.data_flow_risks, key=lambda x: sev_order(x.severity)):
-            icon = _sev_icon(df.severity)
-            pii = ", ".join(f"`{f}`" for f in df.pii_fields_in_path) if df.pii_fields_in_path else "none"
-            lines.append(f"- {icon} **{df.data_source}** -> **{df.data_sink}** (PII: {pii})")
-            lines.append(f"  {df.description}")
-            if df.evidence:
-                for e in df.evidence:
-                    lines.append(f"  - `{e.file}:{e.line}` {e.snippet}")
-        lines.append("")
-
-    # Credential leak risks
-    if s.credential_leak_risks:
-        lines.append("### Credential Leak Risks\n")
-        for cl in s.credential_leak_risks:
-            icon = _sev_icon(cl.severity)
-            lines.append(f"- {icon} `{cl.credential_name}` -> **{cl.leak_target}**: {cl.description}")
-            if cl.evidence:
-                for e in cl.evidence:
-                    lines.append(f"  - `{e.file}:{e.line}` {e.snippet}")
-        lines.append("")
-
-    # Agent & skill security
-    if s.agent_scan and s.agent_scan.findings:
-        lines.append("### Agent & Skill Security\n")
-        for af in sorted(s.agent_scan.findings, key=lambda x: sev_order(x.severity)):
-            icon = _sev_icon(af.severity)
-            lines.append(f"- {icon} **{af.title}**")
-            lines.append(f"  Category: {af.category} | File: `{af.file}:{af.line}`")
-            lines.append(f"  {af.description}")
-            if af.recommendation:
-                lines.append(f"  Recommendation: {af.recommendation}")
         lines.append("")
 
     # Entrypoint projections (detailed, after summary matrix)
@@ -506,10 +464,6 @@ def _render_structural_summary(result: ScanResult) -> str:
     if a.egress.outbound_calls:
         egress = ", ".join(f"`{c.library}` ({c.kind})" for c in a.egress.outbound_calls[:10])
         lines.append(f"**External connections**: {egress}\n")
-        gw = a.egress.suggested_gateway_needs
-        if gw.needs_llm_gateway:
-            models = ", ".join(gw.requested_models) if gw.requested_models else "unknown"
-            lines.append(f"LLM gateway recommended. Models: {models}\n")
 
     lines.append('*For full structural details, use `--format json`*\n')
 
@@ -533,34 +487,6 @@ def _render_toolchain(result: ScanResult) -> str:
         lines.append(f"| {t.name} | {t.version} | {t.status} | {findings_str} | {t.description} |")
 
     lines.append("")
-    return "\n".join(lines)
-
-
-# ── 9. Recommendations ────────────────────────────────────────────────────
-
-
-def _render_recommendations(result: ScanResult) -> str:
-    a = result.analysis
-    if not a.porting_plan.required_changes and not a.porting_plan.optional_changes:
-        return ""
-
-    lines: list[str] = []
-    lines.append("## Recommendations\n")
-    if a.porting_plan.summary:
-        lines.append(f"{a.porting_plan.summary}\n")
-    if a.porting_plan.required_changes:
-        lines.append("### Required Changes\n")
-        for ch in a.porting_plan.required_changes:
-            lines.append(f"- **{ch.type}**: {ch.description}")
-            if ch.suggested_fix:
-                lines.append(f"  - Fix: {ch.suggested_fix}")
-        lines.append("")
-    if a.porting_plan.optional_changes:
-        lines.append("### Optional Changes\n")
-        for ch in a.porting_plan.optional_changes:
-            lines.append(f"- **{ch.type}**: {ch.description}")
-        lines.append("")
-
     return "\n".join(lines)
 
 

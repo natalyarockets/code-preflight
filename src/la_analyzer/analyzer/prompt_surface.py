@@ -16,6 +16,7 @@ from la_analyzer.analyzer.models import (
     PromptSurfaceReport,
     PromptVariable,
 )
+from la_analyzer.utils import snippet
 
 # LLM SDK method names that indicate a call site
 _LLM_METHODS = {
@@ -111,7 +112,7 @@ def scan_prompt_surfaces(
             if prompt_vars or constants:
                 ev = Evidence(
                     file=rel, line=node.lineno,
-                    snippet=_snippet(source, node.lineno),
+                    snippet=snippet(source, node.lineno),
                     function_name=func_name if func_name != "<module>" else None,
                 )
                 surfaces.append(PromptSurface(
@@ -427,8 +428,3 @@ def _dedupe_vars(variables: list[PromptVariable]) -> list[PromptVariable]:
     return result
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

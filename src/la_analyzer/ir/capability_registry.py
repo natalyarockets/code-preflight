@@ -222,7 +222,9 @@ AUTH_GUARD_CLASSES: frozenset[str] = frozenset({
 
 # Auth guard function name pattern
 AUTH_GUARD_FUNC_RE = re.compile(
-    r"(verify_|get_current_|authenticate|require_|check_auth|validate_token)", re.IGNORECASE
+    r"(verify_|get_current_|authenticate|require_|check_auth|validate_token|"
+    r"oauth|bearer|api[_-]?key|jwt|token|current_user|login_required)",
+    re.IGNORECASE,
 )
 
 

@@ -147,29 +147,9 @@ def _check_auth_guards(
                                 file=rel,
                                 line=func_node.lineno,
                             ))
-                        elif dep_name and dep_name not in ("None",):
-                            # Variable depends — it's a Depends(some_var) pattern.
-                            # This is always potentially an auth guard (FastAPI convention).
-                            # Trust it: if they're using Depends() on any callable, it's
-                            # guarded (could be get_current_user, oauth2_scheme, etc.)
-                            guard_id = f"{rel}::{func_node.lineno}::guard::auth"
-                            guard_node = EffectNode(
-                                id=guard_id,
-                                kind="guard",
-                                file=rel,
-                                line=func_node.lineno,
-                                name=dep_name,
-                                metadata={"auth_type": "depends_var"},
-                            )
-                            graph.add_node(guard_node)
-                            graph.add_edge(EffectEdge(
-                                src=guard_id,
-                                dst=route_id,
-                                kind="guarded_by",
-                                file=rel,
-                                line=func_node.lineno,
-                            ))
-                            has_auth = True
+                        # Do not treat arbitrary Depends(...) as auth. Only auth-like
+                        # names/classes should create guard edges; otherwise we risk
+                        # false negatives by suppressing truly unauthenticated routes.
 
     # Also check annotations for Security(...) patterns
     for arg in func_node.args.args + func_node.args.kwonlyargs:
@@ -274,6 +254,22 @@ def _check_state_overexposure(
                 if n:
                     n.metadata["state_overexposure"] = True
                     n.metadata["state_var"] = var_name
+
+        # Also detect common snapshot patterns like {"current_state": state_values}
+        if isinstance(child.value, ast.Dict):
+            for k, v in zip(child.value.keys, child.value.values):
+                key_name = k.value if isinstance(k, ast.Constant) and isinstance(k.value, str) else None
+                if not key_name or "state" not in key_name.lower():
+                    continue
+                value_names = {n.id for n in ast.walk(v) if isinstance(n, ast.Name)}
+                if not any("state" in name.lower() for name in value_names):
+                    continue
+                n = graph.get_node(route_id)
+                if n:
+                    n.metadata["state_overexposure"] = True
+                    # Prefer the concrete variable if available, else the response key.
+                    state_var = next((nm for nm in value_names if "state" in nm.lower()), key_name)
+                    n.metadata["state_var"] = state_var
 
 
 def _get_name(node: ast.expr | None) -> str | None:

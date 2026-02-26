@@ -23,6 +23,7 @@ def query_prompt_injection(graph: EffectGraph) -> list[SecurityFinding]:
         SourceTrust.USER_CONTROLLED,
         SourceTrust.HEADER_CONTROLLED,
         SourceTrust.EXTERNAL_UNTRUSTED,
+        SourceTrust.DB_RESULT,  # indirect/RAG/state-derived content
     }
 
     def is_untrusted_source(n: EffectNode) -> bool:
@@ -223,7 +224,23 @@ def query_sql_severity_upgrade(
     if not risky_sources:
         return []
 
-    risky_source_files = {(s.file, s.line) for s in risky_sources}
+    # Require at least one risky-source -> DB write/persistence path. This avoids
+    # over-upgrading based on mere file co-location.
+    risky_db_paths = graph.find_paths(
+        source_pred=lambda n: n.kind == "source" and n.source_trust in {
+            SourceTrust.USER_CONTROLLED, SourceTrust.HEADER_CONTROLLED,
+        },
+        sink_pred=lambda n: n.kind == "sink" and n.sink_kind in {SinkKind.DB_WRITE, SinkKind.LOCAL_PERSISTENCE},
+        edge_kinds={"data_flows_to", "reaches"},
+        max_paths=50,
+    )
+    if not risky_db_paths:
+        return []
+
+    risky_sink_lines_by_file: dict[str, set[int]] = {}
+    for path in risky_db_paths:
+        sink = path[-1]
+        risky_sink_lines_by_file.setdefault(sink.file, set()).add(sink.line)
 
     for finding in existing_findings:
         if finding.category != "injection":
@@ -235,16 +252,14 @@ def query_sql_severity_upgrade(
 
         # Check if any evidence is in a file with risky sources
         for ev in finding.evidence:
-            # Check if there's a source node in the same file
-            file_has_source = any(
-                file == ev.file for file, _ in risky_source_files
-            )
-            if file_has_source:
+            sink_lines = risky_sink_lines_by_file.get(ev.file, set())
+            # Only upgrade when the SQL finding is near a risky-source-reachable DB sink.
+            if any(abs(ev.line - sink_line) <= 40 for sink_line in sink_lines):
                 upgraded_finding = finding.model_copy(deep=True)
                 upgraded_finding.severity = "high"
                 upgraded_finding.description = (
                     finding.description
-                    + " [UPGRADED: user/header-controlled input detected in same file]"
+                    + " [UPGRADED: risky-source-reachable DB sink found near this SQL construction]"
                 )
                 upgraded.append(upgraded_finding)
                 break

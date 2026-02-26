@@ -10,6 +10,7 @@ import pytest
 from la_analyzer.ir.capability_registry import Capability, SinkKind, SourceTrust
 from la_analyzer.ir.graph import EffectGraph
 from la_analyzer.ir.python_frontend import analyze_file
+from la_analyzer.ir.queries import query_prompt_injection
 
 
 def make_py_file(tmp_path: Path, name: str, code: str) -> Path:
@@ -170,6 +171,20 @@ class TestLambdaUnwrapping:
                      if n.kind == "sink" and n.sink_kind == SinkKind.LLM_PROMPT]
         assert len(llm_sinks) >= 1
 
+    def test_with_smtp_context_manager_detects_email_sink(self, tmp_path):
+        f = make_py_file(tmp_path, "mail.py", """
+            import smtplib
+
+            def send(msg):
+                with smtplib.SMTP("smtp.example.com", 587) as server:
+                    server.send_message(msg)
+        """)
+        g = EffectGraph()
+        analyze_file(f, tmp_path, g)
+        email_sinks = [n for n in g.all_nodes()
+                       if n.kind == "sink" and n.sink_kind == SinkKind.EMAIL_SMTP]
+        assert len(email_sinks) >= 1
+
 
 class TestTaintThroughFString:
     def test_tainted_var_tracked_through_fstring(self, tmp_path):
@@ -211,6 +226,22 @@ class TestStateCapability:
         store_nodes = [n for n in g.all_nodes() if n.kind == "store"]
         assert len(store_nodes) >= 1
 
+    def test_langgraph_state_get_can_reach_prompt_sink(self, tmp_path):
+        f = make_py_file(tmp_path, "graph_node.py", """
+            from langchain_openai import ChatOpenAI
+
+            llm = ChatOpenAI()
+
+            def node_fn(state):
+                user_issue = state.get("user_issue")
+                prompt = f"Issue: {user_issue}"
+                return llm.invoke(prompt)
+        """)
+        g = EffectGraph()
+        analyze_file(f, tmp_path, g)
+        findings = query_prompt_injection(g)
+        assert any(f.category == "prompt_injection" for f in findings)
+
 
 class TestFastAPIRouteDetection:
     def test_unauthenticated_route_detected(self, tmp_path):
@@ -249,3 +280,22 @@ class TestFastAPIRouteDetection:
         assert len(routes) >= 1
         assert len(guards) >= 1
         assert len(guard_edges) >= 1
+
+    def test_non_auth_depends_does_not_count_as_auth_guard(self, tmp_path):
+        f = make_py_file(tmp_path, "routes.py", """
+            from fastapi import FastAPI, Depends
+
+            app = FastAPI()
+
+            def get_db():
+                return object()
+
+            @app.get("/items")
+            async def items(db = Depends(get_db)):
+                return {"ok": True}
+        """)
+        g = EffectGraph()
+        analyze_file(f, tmp_path, g)
+        routes = [n for n in g.all_nodes() if n.kind == "route"]
+        assert len(routes) == 1
+        assert routes[0].metadata.get("unguarded", True) is True

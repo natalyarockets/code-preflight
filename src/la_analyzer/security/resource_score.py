@@ -6,6 +6,7 @@ import ast
 from pathlib import Path
 
 from la_analyzer.security.models import Evidence, SecurityFinding
+from la_analyzer.utils import snippet
 
 
 def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityFinding]:
@@ -43,7 +44,7 @@ def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityF
                             description="while True loop without a visible break/return — may run indefinitely",
                             evidence=[Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             )],
                             recommendation="Ensure the loop has a bounded exit condition.",
                         ))
@@ -64,7 +65,7 @@ def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityF
                             description=f"multiprocessing.{attr}() — spawns additional processes that could exhaust resources",
                             evidence=[Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             )],
                             recommendation="Ensure process/pool count is bounded.",
                         ))
@@ -83,7 +84,7 @@ def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityF
                             description="os.fork() creates new processes — risk of fork bomb",
                             evidence=[Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             )],
                             recommendation="Avoid os.fork() in managed environments.",
                         ))
@@ -109,7 +110,7 @@ def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityF
                                     description=f"HTTP {attr}() called inside a loop — may cause excessive external requests",
                                     evidence=[Evidence(
                                         file=rel, line=node.lineno,
-                                        snippet=_snippet(source, node.lineno),
+                                        snippet=snippet(source, node.lineno),
                                     )],
                                     recommendation="Consider rate limiting or batching requests.",
                                 ))
@@ -130,7 +131,7 @@ def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityF
                                 description=".read() without size limit loads entire file into memory",
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 recommendation="Consider reading in chunks for large files.",
                             ))
@@ -210,8 +211,3 @@ def _full_call_name(node: ast.Call) -> str:
     return ".".join(reversed(parts))
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

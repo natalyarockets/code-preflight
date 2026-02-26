@@ -15,7 +15,6 @@ from la_analyzer.analyzer.models import (
     FunctionNode,
     IOReport,
     OutboundCall,
-    PortingPlan,
     ProjectedEffect,
     ProjectionReport,
     SecretFinding,
@@ -41,16 +40,12 @@ def _minimal_analysis() -> AnalysisResult:
         egress=EgressReport(),
         secrets=SecretsReport(),
         deps=DepsReport(),
-        porting_plan=PortingPlan(),
         description=DescriptionReport(),
     )
 
 
 def _minimal_security() -> SecurityReport:
-    return SecurityReport(
-        critical_count=0, high_count=0, medium_count=0, low_count=0,
-        deploy_blocked=False, requires_review=False,
-    )
+    return SecurityReport(deploy_blocked=False, requires_review=False)
 
 
 def _make_result(
@@ -76,7 +71,6 @@ def test_render_summary_card_at_top():
             description="subprocess call detected",
             evidence=[SecEvidence(file="app.py", line=5, snippet="subprocess.run(...)")],
         )],
-        critical_count=1, high_count=0, medium_count=2, low_count=1,
         deploy_blocked=True, requires_review=False,
     )
     result = _make_result(security=security)
@@ -92,8 +86,8 @@ def test_render_summary_card_at_top():
     # Gate decision should be present
     assert "BLOCKED" in md
 
-    # Severity counts table should be present
-    assert "| 1 | 0 | 2 | 1 |" in md
+    # Severity counts table should reflect the one critical finding
+    assert "| 1 | 0 | 0 | 0 |" in md
 
 
 def test_render_summary_card_pass():
@@ -105,9 +99,10 @@ def test_render_summary_card_pass():
 
 def test_render_summary_card_review_required():
     """High-severity findings should show REVIEW REQUIRED."""
-    security = SecurityReport(
-        high_count=2, requires_review=True,
-    )
+    security = SecurityReport(findings=[SecurityFinding(
+        category="injection", severity="high",
+        title="exec() detected", description="exec() usage found",
+    )])
     result = _make_result(security=security)
     md = render_markdown(result)
     assert "REVIEW REQUIRED" in md
@@ -116,14 +111,14 @@ def test_render_summary_card_review_required():
 def test_render_top_risks():
     """Top risks should be actionable sentences."""
     security = SecurityReport(
-        credential_leak_risks=[CredentialLeakRisk(
+        findings=[CredentialLeakRisk(
             credential_name="API_KEY",
             leak_target="log_output",
             description="API_KEY printed to stdout",
             evidence=[SecEvidence(file="app.py", line=10, snippet="print(api_key)")],
             severity="critical",
         )],
-        critical_count=1, deploy_blocked=True,
+        deploy_blocked=True,
     )
     result = _make_result(security=security)
     md = render_markdown(result)
@@ -143,8 +138,6 @@ def test_top_risks_preserves_all_severe_findings_for_count_alignment():
     )
     security = SecurityReport(
         findings=[ir_finding, ir_finding],
-        ir_query_count=2,
-        high_count=2,
         requires_review=True,
     )
     result = _make_result(security=security)
@@ -165,27 +158,29 @@ def test_render_trust_boundaries():
     )])
 
     security = SecurityReport(
-        findings=[SecurityFinding(
-            category="secrets", severity="high",
-            title="Hardcoded secret: API_KEY",
-            description="hardcoded_key found in source code",
-            evidence=[SecEvidence(file="config.py", line=1, snippet='API_KEY = "sk-..."')],
-        )],
-        credential_leak_risks=[CredentialLeakRisk(
-            credential_name="API_KEY",
-            leak_target="llm_prompt",
-            description="Credential in LLM prompt",
-            evidence=[SecEvidence(file="ai.py", line=10, snippet="prompt = f'{api_key}'")],
-        )],
-        data_flow_risks=[DataFlowRisk(
-            data_source="customers.csv",
-            data_sink="openai LLM",
-            pii_fields_in_path=["email", "ssn"],
-            description="PII sent to LLM",
-            evidence=[SecEvidence(file="ai.py", line=15, snippet="client.create(...)")],
-            severity="high",
-        )],
-        high_count=2, requires_review=True,
+        findings=[
+            SecurityFinding(
+                category="secrets", severity="high",
+                title="Hardcoded secret: API_KEY",
+                description="hardcoded_key found in source code",
+                evidence=[SecEvidence(file="config.py", line=1, snippet='API_KEY = "sk-..."')],
+            ),
+            CredentialLeakRisk(
+                credential_name="API_KEY",
+                leak_target="llm_prompt",
+                description="Credential in LLM prompt",
+                evidence=[SecEvidence(file="ai.py", line=10, snippet="prompt = f'{api_key}'")],
+            ),
+            DataFlowRisk(
+                data_source="customers.csv",
+                data_sink="openai LLM",
+                pii_fields_in_path=["email", "ssn"],
+                description="PII sent to LLM",
+                evidence=[SecEvidence(file="ai.py", line=15, snippet="client.create(...)")],
+                severity="high",
+            ),
+        ],
+        requires_review=True,
     )
 
     result = _make_result(analysis=analysis, security=security)
@@ -198,10 +193,10 @@ def test_render_trust_boundaries():
     assert "Secrets Detected" not in md
     # Secrets, credential leaks, and data flow risks all in Security Findings
     assert "Hardcoded secret" in md
-    assert "Credential Leak Risks" in md
+    assert "credential_leak" in md
     assert "API_KEY" in md
-    assert "Data Flow Risks" in md
-    assert "`email`" in md
+    assert "data_flow" in md
+    assert "email" in md
 
 
 def test_no_trust_boundaries_for_clean_project():
@@ -328,7 +323,7 @@ def test_full_report_section_order():
             description="exec() detected",
             evidence=[SecEvidence(file="app.py", line=1, snippet="exec(x)")],
         )],
-        high_count=1, requires_review=True,
+        requires_review=True,
     )
     projection = ProjectionReport(
         projections=[EntrypointProjection(
@@ -508,31 +503,32 @@ def test_pdf_full_data(tmp_path):
     )])
 
     security = SecurityReport(
-        findings=[SecurityFinding(
-            category="injection", severity="critical",
-            title="Shell execution via subprocess",
-            description="subprocess call detected",
-            recommendation="Use shlex.split() for argument parsing",
-            evidence=[SecEvidence(file="app.py", line=5, snippet="subprocess.run(...)")],
-        )],
-        credential_leak_risks=[CredentialLeakRisk(
-            credential_name="API_KEY",
-            leak_target="llm_prompt",
-            description="Credential in LLM prompt",
-            evidence=[SecEvidence(file="ai.py", line=10, snippet="prompt = f'{api_key}'")],
-        )],
-        data_flow_risks=[DataFlowRisk(
-            data_source="customers.csv",
-            data_sink="openai LLM",
-            pii_fields_in_path=["email", "ssn"],
-            description="PII sent to LLM",
-            evidence=[SecEvidence(file="ai.py", line=15, snippet="client.create(...)")],
-            severity="high",
-        )],
+        findings=[
+            SecurityFinding(
+                category="injection", severity="critical",
+                title="Shell execution via subprocess",
+                description="subprocess call detected",
+                recommendation="Use shlex.split() for argument parsing",
+                evidence=[SecEvidence(file="app.py", line=5, snippet="subprocess.run(...)")],
+            ),
+            CredentialLeakRisk(
+                credential_name="API_KEY",
+                leak_target="llm_prompt",
+                description="Credential in LLM prompt",
+                evidence=[SecEvidence(file="ai.py", line=10, snippet="prompt = f'{api_key}'")],
+            ),
+            DataFlowRisk(
+                data_source="customers.csv",
+                data_sink="openai LLM",
+                pii_fields_in_path=["email", "ssn"],
+                description="PII sent to LLM",
+                evidence=[SecEvidence(file="ai.py", line=15, snippet="client.create(...)")],
+                severity="high",
+            ),
+        ],
         data_classifications=[DataClassification(
             category="pii", confidence=0.95, fields_detected=["email", "ssn"],
         )],
-        critical_count=1, high_count=1, medium_count=0, low_count=0,
         deploy_blocked=True, requires_review=False,
     )
 
@@ -585,7 +581,7 @@ def test_pdf_unicode_safety(tmp_path):
             description="Uses eval() with user input \u2192 RCE risk \u2265 critical",
             evidence=[SecEvidence(file="app.py", line=1, snippet='eval("2\u00b2")')],
         )],
-        high_count=1, requires_review=True,
+        requires_review=True,
     )
     result = _make_result(security=security)
     out = tmp_path / "unicode.pdf"

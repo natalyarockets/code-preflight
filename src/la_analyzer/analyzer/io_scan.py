@@ -13,6 +13,7 @@ from la_analyzer.analyzer.models import (
     IOOutput,
     IOReport,
 )
+from la_analyzer.utils import snippet
 
 # Map extensions to format labels
 _EXT_TO_FORMAT = {
@@ -141,7 +142,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                 mode = _get_mode_arg(node)
                 ev = Evidence(
                     file=rel, line=node.lineno,
-                    snippet=_snippet(source, node.lineno),
+                    snippet=snippet(source, node.lineno),
                 )
                 if mode and any(c in mode for c in "wxa"):
                     fmt = _format_from_path(path_lit)
@@ -189,7 +190,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         fmt = _format_from_path(path_lit)
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                     if path_lit and path_lit not in seen_input_paths:
                         seen_input_paths.add(path_lit)
@@ -214,7 +215,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         fmt = _format_from_path(path_lit) if path_lit else "png"
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                     if path_lit and path_lit not in seen_output_paths:
                         seen_output_paths.add(path_lit)
@@ -253,7 +254,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     fmt = _format_from_path(path_lit) if path_lit else "unknown"
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                     if path_lit and path_lit not in seen_output_paths:
                         seen_output_paths.add(path_lit)
@@ -295,7 +296,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     if fmt != "unknown" or (is_dir_default and (is_output or is_input)):
                         ev = Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )
                         # For directory defaults, use "directory" format
                         if fmt == "unknown" and is_dir_default:
@@ -338,7 +339,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     # Path is usually inside the file handle arg, not extractable
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                     if is_csv_write:
                         csv_id = f"output_{_output_counter}"
@@ -367,7 +368,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     if receiver == "json":
                         ev = Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )
                         json_id = f"input_{_input_counter}"
                         inputs.append(IOInput(
@@ -381,7 +382,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     if receiver == "json":
                         ev = Evidence(
                             file=rel, line=node.lineno,
-                            snippet=_snippet(source, node.lineno),
+                            snippet=snippet(source, node.lineno),
                         )
                         json_id = f"output_{_output_counter}"
                         outputs.append(IOOutput(
@@ -403,7 +404,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                 if is_dir_iter:
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                     dir_path = _extract_path_literal(node)
                     dir_label = dir_path or "File Upload"
@@ -424,7 +425,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     path_lit = _extract_path_literal(node)
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                     )
                     if path_lit and path_lit not in seen_input_paths:
                         seen_input_paths.add(path_lit)
@@ -763,8 +764,3 @@ def _format_from_path(path: str | None) -> str:
     return "unknown"
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

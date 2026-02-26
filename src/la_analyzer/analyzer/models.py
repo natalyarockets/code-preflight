@@ -104,17 +104,8 @@ class OutboundCall(BaseModel):
     confidence: float = 0.5
 
 
-class SuggestedGatewayNeeds(BaseModel):
-    needs_llm_gateway: bool = False
-    needs_external_api_gateway: bool = False
-    requested_models: list[str] = Field(default_factory=list)
-
-
 class EgressReport(BaseModel):
     outbound_calls: list[OutboundCall] = Field(default_factory=list)
-    suggested_gateway_needs: SuggestedGatewayNeeds = Field(
-        default_factory=SuggestedGatewayNeeds
-    )
 
 
 # ── D) secrets_report.json ─────────────────────────────────────────────────
@@ -152,35 +143,6 @@ class DepsReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-# ── F) porting_plan.json ──────────────────────────────────────────────────
-
-class ChangeFile(BaseModel):
-    file: str
-    line: int | None = None
-    snippet: str | None = None
-
-
-class RequiredChange(BaseModel):
-    type: Literal[
-        "replace_hardcoded_input",
-        "route_llm_via_gateway",
-        "route_external_via_proxy",
-        "remove_embedded_secret",
-        "standardize_outputs",
-        "choose_entrypoint",
-    ]
-    description: str
-    files: list[ChangeFile] = Field(default_factory=list)
-    suggested_fix: str = ""
-
-
-class PortingPlan(BaseModel):
-    summary: str = ""
-    required_changes: list[RequiredChange] = Field(default_factory=list)
-    optional_changes: list[RequiredChange] = Field(default_factory=list)
-    wrapper_recommended: bool = False
-    wrapper_entrypoint_path: str = "livingapps_entrypoint.py"
-
 
 # ── G) description_report.json ───────────────────────────────────────────
 
@@ -192,10 +154,7 @@ class ModuleDocstring(BaseModel):
 
 
 class DescriptionReport(BaseModel):
-    """Extracted natural-language context: README + module docstrings.
-
-    Post-MVP: feed this into LLM enrichment for semantic flow labels.
-    """
+    """Extracted natural-language context: README + module docstrings."""
 
     readme_content: str = ""
     readme_file: str = ""  # e.g. "README.md"
@@ -282,19 +241,17 @@ class AnalysisResult(BaseModel):
     egress_report_path: str = ""
     secrets_report_path: str = ""
     deps_report_path: str = ""
-    porting_plan_path: str = ""
     description_report_path: str = ""
     prompt_surface_report_path: str = ""
     tool_registration_report_path: str = ""
     state_flow_report_path: str = ""
-    manifest_path: str = ""
+    py_file_count: int = 0
 
     detection: DetectionReport = Field(default_factory=DetectionReport)
     io: IOReport = Field(default_factory=IOReport)
     egress: EgressReport = Field(default_factory=EgressReport)
     secrets: SecretsReport = Field(default_factory=SecretsReport)
     deps: DepsReport = Field(default_factory=DepsReport)
-    porting_plan: PortingPlan = Field(default_factory=PortingPlan)
     description: DescriptionReport = Field(default_factory=DescriptionReport)
     prompt_surface: PromptSurfaceReport = Field(default_factory=PromptSurfaceReport)
     tool_registration: ToolRegistrationReport = Field(default_factory=ToolRegistrationReport)

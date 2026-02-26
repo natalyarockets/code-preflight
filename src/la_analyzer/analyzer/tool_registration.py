@@ -18,6 +18,7 @@ from la_analyzer.analyzer.models import (
     ToolCapability,
     ToolRegistrationReport,
 )
+from la_analyzer.utils import snippet
 
 # Method/function calls that indicate network access
 _NETWORK_CALLS = {
@@ -89,7 +90,7 @@ def scan_tool_registrations(
                     caps = _classify_capabilities(node, source)
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                         function_name=node.name,
                     )
                     tools.append(RegisteredTool(
@@ -121,7 +122,7 @@ def scan_tool_registrations(
                             caps = _classify_capabilities(fdef, source)
                             ev = Evidence(
                                 file=rel, line=node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                                 function_name=elt.id,
                             )
                             tools.append(RegisteredTool(
@@ -146,7 +147,7 @@ def scan_tool_registrations(
                         if name:
                             ev = Evidence(
                                 file=rel, line=elt.lineno if hasattr(elt, "lineno") else node.lineno,
-                                snippet=_snippet(source, node.lineno),
+                                snippet=snippet(source, node.lineno),
                             )
                             # Try to find matching function def for capabilities
                             caps: list[ToolCapability] = []
@@ -187,7 +188,7 @@ def scan_tool_registrations(
                     caps = _classify_capabilities(fdef, source)
                     ev = Evidence(
                         file=rel, line=node.lineno,
-                        snippet=_snippet(source, node.lineno),
+                        snippet=snippet(source, node.lineno),
                         function_name=func_name,
                     )
                     tools.append(RegisteredTool(
@@ -322,8 +323,3 @@ def _is_write_mode(node: ast.Call) -> bool:
     return False
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

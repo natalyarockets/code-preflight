@@ -17,7 +17,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from la_analyzer.security.models import SecurityReport, SecurityFinding, Evidence as SecEvidence
+from la_analyzer.analyzer.models import AnalysisResult, Evidence
+from la_analyzer.security.models import SecurityReport, SecurityFinding
 from la_analyzer.security.code_scan import scan_code
 from la_analyzer.security.data_classify import classify_data
 from la_analyzer.security.data_flow import scan_data_flow
@@ -33,7 +34,7 @@ log = logging.getLogger(__name__)
 def run_security_review(
     *,
     workspace_dir: Path,
-    analysis_result=None,
+    analysis_result: AnalysisResult | None = None,
     requirements: list[str] | None = None,
     report_dir: Path | None = None,
     report_filename: str = "security_report.json",
@@ -47,27 +48,22 @@ def run_security_review(
         report_dir: Directory to write the security_report.json (optional).
 
     Returns:
-        SecurityReport with all findings.
+        SecurityReport with all findings in a single canonical list.
     """
     log.info("Starting security review for %s", workspace_dir)
 
-    # Discover files
     all_files = discover_files(workspace_dir)
     py_files = [f for f in all_files if f.suffix == ".py"]
-
     log.info("Scanning %d Python files in %s", len(py_files), workspace_dir)
 
-    # Run all scanners — each wrapped so one failure doesn't kill the report
-    code_findings: list = []
+    # Each scanner returns list[SecurityFinding].  Failures are non-fatal.
+    all_findings: list[SecurityFinding] = []
     data_classifications: list = []
-    data_flow_risks: list = []
-    credential_leaks: list = []
-    vuln_findings: list = []
-    resource_findings: list = []
 
     try:
-        code_findings = scan_code(workspace_dir, py_files)
-        log.info("Code scan: %d findings", len(code_findings))
+        findings = scan_code(workspace_dir, py_files)
+        all_findings.extend(findings)
+        log.info("Code scan: %d findings", len(findings))
     except Exception:
         log.exception("Code scan failed")
 
@@ -78,68 +74,56 @@ def run_security_review(
         log.exception("Data classification failed")
 
     try:
-        data_flow_risks = scan_data_flow(
+        findings = scan_data_flow(
             workspace_dir, py_files,
             data_classifications=[dc.model_dump() for dc in data_classifications],
         )
-        log.info("Data flow: %d risks", len(data_flow_risks))
+        all_findings.extend(findings)
+        log.info("Data flow: %d findings", len(findings))
     except Exception:
         log.exception("Data flow scan failed")
 
     try:
-        credential_leaks = scan_credential_leaks(workspace_dir, py_files)
-        log.info("Credential leak: %d risks", len(credential_leaks))
+        findings = scan_credential_leaks(workspace_dir, py_files)
+        all_findings.extend(findings)
+        log.info("Credential leak: %d findings", len(findings))
     except Exception:
         log.exception("Credential leak scan failed")
 
     try:
-        vuln_findings = scan_vulnerabilities(workspace_dir, requirements or [])
-        log.info("Vuln scan: %d findings", len(vuln_findings))
+        findings = scan_vulnerabilities(workspace_dir, requirements or [])
+        all_findings.extend(findings)
+        log.info("Vuln scan: %d findings", len(findings))
     except Exception:
         log.exception("Vuln scan failed")
 
     try:
-        resource_findings = scan_resource_abuse(workspace_dir, py_files)
-        log.info("Resource abuse: %d findings", len(resource_findings))
+        findings = scan_resource_abuse(workspace_dir, py_files)
+        all_findings.extend(findings)
+        log.info("Resource abuse: %d findings", len(findings))
     except Exception:
         log.exception("Resource abuse scan failed")
 
-    # Agent / skill scan
-    agent_report = None
     try:
-        agent_report = scan_agents(workspace_dir, all_files)
-        log.info("Agent scan: %d findings", len(agent_report.findings))
+        agent_findings = scan_agents(workspace_dir, all_files)
+        all_findings.extend(agent_findings)
+        log.info("Agent scan: %d findings", len(agent_findings))
     except Exception:
         log.exception("Agent scan failed")
 
-    # IR graph analysis
-    ir_findings: list = []
-    try:
-        from la_analyzer.ir import build_effect_graph
-        from la_analyzer.ir.queries import run_all_queries
-        effect_graph = build_effect_graph(workspace_dir, py_files)
-        ir_findings = run_all_queries(effect_graph, existing_findings=code_findings + vuln_findings + resource_findings)
-        ir_findings = [
-            f.model_copy(update={"origin": "ir_query"})
-            for f in ir_findings
-        ]
-        log.info("IR graph queries: %d findings", len(ir_findings))
-    except Exception:
-        log.exception("IR graph scan failed")
-
-    # Convert analysis secrets to first-class security findings
-    secrets_as_findings: list[SecurityFinding] = []
-    if analysis_result and hasattr(analysis_result, "secrets"):
+    # Convert analysis secrets to SecurityFindings — done BEFORE IR queries so
+    # IR severity-fusion sees the full base finding set (including secrets).
+    if analysis_result is not None:
         _sev_map = {"hardcoded_key": "high", "dotenv_file": "high", "token_like": "medium"}
         for sf in analysis_result.secrets.findings:
             sev = _sev_map.get(sf.kind, "low")
             label = sf.name_hint or sf.kind
             value = f" ({sf.value_redacted})" if sf.value_redacted else ""
             evidence = [
-                SecEvidence(file=e.file, line=e.line, snippet=getattr(e, "snippet", "") or "")
+                Evidence(file=e.file, line=e.line, snippet=getattr(e, "snippet", "") or "")
                 for e in sf.evidence
             ]
-            secrets_as_findings.append(SecurityFinding(
+            all_findings.append(SecurityFinding(
                 category="secrets",
                 severity=sev,
                 title=f"Hardcoded secret: {label}",
@@ -155,61 +139,38 @@ def run_security_review(
                 ),
             ))
 
-    # Merge all findings
-    all_findings = code_findings + vuln_findings + resource_findings + ir_findings + secrets_as_findings
+    try:
+        from la_analyzer.ir import build_effect_graph
+        from la_analyzer.ir.queries import run_all_queries
+        effect_graph = build_effect_graph(workspace_dir, py_files)
+        # Pass the complete base finding set (including secrets) for severity fusion.
+        ir_findings = run_all_queries(
+            effect_graph,
+            existing_findings=[f for f in all_findings if f.origin != "ir_query"],
+        )
+        all_findings.extend(
+            f.model_copy(update={"origin": "ir_query"}) for f in ir_findings
+        )
+        log.info("IR graph queries: %d findings", len(ir_findings))
+    except Exception:
+        log.exception("IR graph scan failed")
 
-    # Compute severity counts
-    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for f in all_findings:
-        if f.severity in severity_counts:
-            severity_counts[f.severity] += 1
-    for r in data_flow_risks:
-        if r.severity in severity_counts:
-            severity_counts[r.severity] += 1
-    for c in credential_leaks:
-        if c.severity in severity_counts:
-            severity_counts[c.severity] += 1
-    if agent_report:
-        for af in agent_report.findings:
-            if af.severity in severity_counts:
-                severity_counts[af.severity] += 1
+    # Pull summary stats from analysis
+    secrets_found = len(analysis_result.secrets.findings) if analysis_result else 0
+    egress_endpoints = len(analysis_result.egress.outbound_calls) if analysis_result else 0
+    hardcoded_paths = len(analysis_result.io.hardcoded_paths) if analysis_result else 0
 
-    # Pull summary stats from existing analysis
-    secrets_found = 0
-    egress_endpoints = 0
-    hardcoded_paths = 0
-    if analysis_result:
-        if hasattr(analysis_result, "secrets"):
-            secrets_found = len(analysis_result.secrets.findings)
-        if hasattr(analysis_result, "egress"):
-            egress_endpoints = len(analysis_result.egress.outbound_calls)
-        if hasattr(analysis_result, "io"):
-            hardcoded_paths = len(analysis_result.io.hardcoded_paths)
-
-    # Gate decision: derived purely from severity counts.
-    deploy_blocked = severity_counts["critical"] > 0
-    requires_review = severity_counts["high"] > 0
-
+    # Gate booleans (deploy_blocked, requires_review) are computed fields on
+    # SecurityReport — derived from findings automatically, no need to set them.
     report = SecurityReport(
         created_at=datetime.now(timezone.utc).isoformat(),
         findings=all_findings,
         data_classifications=data_classifications,
-        data_flow_risks=data_flow_risks,
-        credential_leak_risks=credential_leaks,
-        ir_query_count=len(ir_findings),
-        critical_count=severity_counts["critical"],
-        high_count=severity_counts["high"],
-        medium_count=severity_counts["medium"],
-        low_count=severity_counts["low"],
-        deploy_blocked=deploy_blocked,
-        requires_review=requires_review,
         secrets_found=secrets_found,
         egress_endpoints=egress_endpoints,
         hardcoded_paths=hardcoded_paths,
-        agent_scan=agent_report,
     )
 
-    # Write to disk
     if report_dir:
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / report_filename
@@ -218,9 +179,9 @@ def run_security_review(
 
     log.info(
         "Security review complete: %d critical, %d high, %d medium, %d low | blocked=%s review=%s",
-        severity_counts["critical"], severity_counts["high"],
-        severity_counts["medium"], severity_counts["low"],
-        deploy_blocked, requires_review,
+        report.critical_count, report.high_count,
+        report.medium_count, report.low_count,
+        report.deploy_blocked, report.requires_review,
     )
 
     return report

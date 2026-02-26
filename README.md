@@ -154,9 +154,12 @@ hardcoded_key found in source code (*****************************mnop).
 
   - `main.py:33`
 
-### Data Flow Risks
+### [MEDIUM] File data flows to output file
 
-- [MEDIUM] **uploaded/read file data** -> **output file** (PII: none)
+**Severity**: medium | **Category**: data_flow
+
+**Data source**: file read | **Sink**: output file | **PII**: none
+
   - `main.py:57`
 ```
 
@@ -229,13 +232,14 @@ The capability registry (`ir/capability_registry.py`) is data-only: adding suppo
 |---|---|
 | `detection_report.json` | Archetypes, entrypoints, Python info |
 | `io_report.json` | Inputs, outputs, hardcoded paths, API routes |
-| `egress_report.json` | Outbound calls, gateway recommendations |
+| `egress_report.json` | Outbound calls (LLM SDKs, HTTP, databases, observability, email) |
 | `secrets_report.json` | Hardcoded keys, .env files, token patterns |
 | `deps_report.json` | Dependencies and sources |
-| `porting_plan.json` | Detected hardcoded paths, outputs, and egress calls |
 | `description_report.json` | README content, module docstrings |
+| `prompt_surface_report.json` | LLM call sites and traced prompt variables |
+| `tool_registration_report.json` | LLM-callable tools and their capabilities |
+| `state_flow_report.json` | LangGraph node state reads/writes |
 | `security_report.json` | All findings (including IR graph findings), severity counts, gate decision |
-| `livingapps.yaml` | Generated app manifest |
 
 `la-scan -f json` outputs a single JSON document combining `analysis`, `security`, and `projection`.
 
@@ -266,9 +270,9 @@ result.security.requires_review       # True if high findings or secrets detecte
 result.security.findings              # all findings: code injection, vulns, IR queries (origin="ir_query"), etc.
 result.security.ir_query_count        # number of findings produced by the effect graph IR
 result.security.data_classifications  # PII, financial, health, credential (informational, no severity)
-result.security.data_flow_risks       # source -> sink traces with severity
-result.security.credential_leak_risks # credential exposure findings with severity
-result.security.agent_scan            # agent/skill findings (or None)
+result.security.data_flow_risks       # filtered view: data-flow findings
+result.security.credential_leak_risks # filtered view: credential-leak findings
+result.security.agent_findings        # filtered view: agent/skill findings
 
 # Phase 3: effect projection
 result.projection.call_graph.functions
@@ -306,7 +310,7 @@ pip install -e ".[dev]"    # includes bandit, detect-secrets, pip-audit
 pytest
 ```
 
-289 tests across 15 test files. Runs in under 5 seconds.
+288 tests across 15 test files. Runs in under 10 seconds.
 
 ## Sweet spot and limits
 

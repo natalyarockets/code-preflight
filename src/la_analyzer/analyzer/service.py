@@ -15,8 +15,7 @@ Usage:
     # result.egress      — EgressReport object
     # result.secrets     — SecretsReport object
     # result.deps        — DepsReport object
-    # result.porting_plan — PortingPlan object
-    # All JSON reports + livingapps.yaml are written to out_dir.
+    # All JSON reports are written to out_dir.
 """
 
 from __future__ import annotations
@@ -24,15 +23,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
-
 from la_analyzer.analyzer.api_scan import scan_api
 from la_analyzer.analyzer.deps_scan import scan_deps
 from la_analyzer.analyzer.description_scan import scan_description
 from la_analyzer.analyzer.egress_scan import scan_egress
 from la_analyzer.analyzer.entrypoint import scan_entrypoints
 from la_analyzer.analyzer.io_scan import scan_io
-from la_analyzer.analyzer.manifest_generator import generate_manifest
 from la_analyzer.analyzer.models import (
     AnalysisResult,
     ArchetypeMatch,
@@ -40,7 +36,6 @@ from la_analyzer.analyzer.models import (
     PythonInfo,
 )
 from la_analyzer.analyzer.notebook_scan import count_notebooks, scan_notebooks
-from la_analyzer.analyzer.porting_plan import generate_porting_plan
 from la_analyzer.analyzer.prompt_surface import scan_prompt_surfaces
 from la_analyzer.analyzer.secrets_scan import scan_secrets
 from la_analyzer.analyzer.state_flow import scan_state_flow
@@ -49,11 +44,11 @@ from la_analyzer.utils import discover_files
 
 
 def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
-    """Analyze a checked-out Python repo and produce all reports + manifest.
+    """Analyze a checked-out Python repo and produce all reports.
 
     Args:
         workspace_dir: Path to the repo root on disk.
-        out_dir: Directory where JSON reports and livingapps.yaml will be written.
+        out_dir: Directory where JSON reports will be written.
 
     Returns:
         AnalysisResult with paths to written files and parsed report objects.
@@ -107,11 +102,6 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
     # ── Deps scan ───────────────────────────────────────────────────────
     deps_report = scan_deps(workspace_dir, py_files, all_files)
 
-    # ── Porting plan ────────────────────────────────────────────────────
-    porting_plan = generate_porting_plan(
-        detection, io_report, egress_report, secrets_report
-    )
-
     # ── Description (README + docstrings) ────────────────────────────────
     entrypoint_files = {
         c.value.split(":")[0].replace(".", "/") + ".py"
@@ -129,11 +119,6 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
     # ── State flow scan ──────────────────────────────────────────────────
     state_flow_report = scan_state_flow(workspace_dir, py_files)
 
-    # ── Manifest ────────────────────────────────────────────────────────
-    manifest = generate_manifest(
-        workspace_dir, detection, io_report, egress_report, secrets_report
-    )
-
     # ── Write outputs ───────────────────────────────────────────────────
     def _write_json(name: str, obj) -> str:
         path = out_dir / name
@@ -145,35 +130,27 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
     egress_path = _write_json("egress_report.json", egress_report)
     secrets_path = _write_json("secrets_report.json", secrets_report)
     deps_path = _write_json("deps_report.json", deps_report)
-    porting_path = _write_json("porting_plan.json", porting_plan)
     description_path = _write_json("description_report.json", description_report)
     prompt_surface_path = _write_json("prompt_surface_report.json", prompt_surface_report)
     tool_registration_path = _write_json("tool_registration_report.json", tool_registration_report)
     state_flow_path = _write_json("state_flow_report.json", state_flow_report)
 
-    manifest_path = str(out_dir / "livingapps.yaml")
-    (out_dir / "livingapps.yaml").write_text(
-        yaml.dump(manifest.model_dump(), default_flow_style=False, sort_keys=False)
-    )
-
     return AnalysisResult(
+        py_file_count=len(py_files),
         detection_report_path=detection_path,
         io_report_path=io_path,
         egress_report_path=egress_path,
         secrets_report_path=secrets_path,
         deps_report_path=deps_path,
-        porting_plan_path=porting_path,
         description_report_path=description_path,
         prompt_surface_report_path=prompt_surface_path,
         tool_registration_report_path=tool_registration_path,
         state_flow_report_path=state_flow_path,
-        manifest_path=manifest_path,
         detection=detection,
         io=io_report,
         egress=egress_report,
         secrets=secrets_report,
         deps=deps_report,
-        porting_plan=porting_plan,
         description=description_report,
         prompt_surface=prompt_surface_report,
         tool_registration=tool_registration_report,

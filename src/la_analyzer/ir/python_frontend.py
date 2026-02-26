@@ -67,8 +67,17 @@ def analyze_file(
     # Pass 1: Imports
     module_alias_map, file_imports = _pass1_imports(tree)
 
-    # Pass 2+3+4: Per-scope abstract env + calls
     var_capability_map: dict[str, Capability] = {}
+
+    # Pass 2+3+4: Per-scope abstract env + calls
+    # LangGraph facts are emitted first so state-derived source nodes exist when
+    # taint edges are emitted during sink analysis in graph nodes.
+    try:
+        from la_analyzer.ir.adapters.langgraph import emit_langgraph_facts
+        emit_langgraph_facts(tree, source, rel, var_capability_map, graph)
+    except Exception:
+        log.debug("LangGraph adapter failed for %s", rel, exc_info=True)
+
     _pass_scopes(tree, source, rel, module_alias_map, file_imports, var_capability_map, graph)
 
     # Pass 5: Decorators
@@ -80,13 +89,6 @@ def analyze_file(
         emit_route_facts(tree, source, rel, var_capability_map, graph, CAPABILITY_REGISTRY)
     except Exception:
         log.debug("FastAPI adapter failed for %s", rel, exc_info=True)
-
-    # Pass 7: LangGraph state
-    try:
-        from la_analyzer.ir.adapters.langgraph import emit_langgraph_facts
-        emit_langgraph_facts(tree, source, rel, var_capability_map, graph)
-    except Exception:
-        log.debug("LangGraph adapter failed for %s", rel, exc_info=True)
 
     return var_capability_map
 
@@ -183,6 +185,11 @@ def _build_abstract_env(
 ) -> None:
     """Pass 2: Walk assignments and build AbstractEnv for the scope."""
     for node in ast.walk(scope):
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars and isinstance(item.optional_vars, ast.Name):
+                    values = _eval_expr(item.context_expr, env, module_alias_map, file_imports)
+                    env[item.optional_vars.id] = values
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
@@ -277,6 +284,20 @@ def _eval_call(
         for pattern, trust in SOURCE_PATTERNS.items():
             if attr_chain == pattern or attr_chain.endswith(f".{pattern}"):
                 return [Tainted(trust=trust, sources=frozenset([attr_chain]))]
+
+    # LangGraph/state dict reads in graph node functions: state.get("key")
+    if isinstance(call.func, ast.Attribute) and call.func.attr == "get":
+        recv = call.func.value
+        recv_name = recv.id if isinstance(recv, ast.Name) else None
+        recv_cap = None
+        if recv_name and recv_name in env:
+            recv_cap = get_capability(env[recv_name])
+        if recv_name == "state" or recv_cap == Capability.STATE_STORE:
+            key_name = None
+            if call.args and isinstance(call.args[0], ast.Constant):
+                key_name = str(call.args[0].value)
+            src_tag = f"state.get({key_name})" if key_name else "state.get"
+            return [Tainted(trust=SourceTrust.DB_RESULT, sources=frozenset([src_tag, "state.get"]))]
 
     # Common source calls
     if func_name in ("getenv", "os.getenv") or attr_chain in (
@@ -519,15 +540,6 @@ def _detect_conditional_effects(
                         if n.kind == "sink" and n.file == rel and n.line == getattr(child, "lineno", -1):
                             n.metadata["conditional"] = True
                             n.metadata["condition_hint"] = "env_var check"
-
-        # try/except around calls → mark as conditional
-        if isinstance(node, ast.Try):
-            for child in ast.walk(node):
-                for n_id, n in graph._nodes.items():
-                    if n.kind == "sink" and n.file == rel and n.line == getattr(child, "lineno", -1):
-                        n.metadata["conditional"] = True
-                        n.metadata["condition_hint"] = "try/except"
-
 
 def _is_env_guard(test: ast.expr, env: AbstractEnv) -> bool:
     """Check if a test expression is an env-var guard like `env_var != "prod"`."""

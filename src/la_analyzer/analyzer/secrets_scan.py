@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from la_analyzer.analyzer.models import Evidence, SecretFinding, SecretsReport
+from la_analyzer.utils import snippet
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ def _ast_name_scan(workspace: Path, py_files: list[Path]) -> list[SecretFinding]
                                         value_redacted=_redact(val),
                                         evidence=[Evidence(
                                             file=rel, line=node.lineno,
-                                            snippet=_snippet(source, node.lineno),
+                                            snippet=snippet(source, node.lineno),
                                         )],
                                         confidence=0.9,
                                     ))
@@ -273,7 +274,7 @@ def _ast_name_scan(workspace: Path, py_files: list[Path]) -> list[SecretFinding]
                                 value_redacted=_redact(v.value),
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 confidence=0.85,
                             ))
@@ -295,7 +296,7 @@ def _ast_name_scan(workspace: Path, py_files: list[Path]) -> list[SecretFinding]
                                 value_redacted=_redact(kw.value.value),
                                 evidence=[Evidence(
                                     file=rel, line=kw.value.lineno,
-                                    snippet=_snippet(source, kw.value.lineno),
+                                    snippet=snippet(source, kw.value.lineno),
                                 )],
                                 confidence=0.9,
                             ))
@@ -335,7 +336,7 @@ def _ast_full_scan(
                                         value_redacted=_redact(val),
                                         evidence=[Evidence(
                                             file=rel, line=node.lineno,
-                                            snippet=_snippet(source, node.lineno),
+                                            snippet=snippet(source, node.lineno),
                                         )],
                                         confidence=0.9,
                                     ))
@@ -360,7 +361,7 @@ def _ast_full_scan(
                                 value_redacted=_redact(v.value),
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 confidence=0.85,
                             ))
@@ -382,7 +383,7 @@ def _ast_full_scan(
                                 value_redacted=_redact(kw.value.value),
                                 evidence=[Evidence(
                                     file=rel, line=kw.value.lineno,
-                                    snippet=_snippet(source, kw.value.lineno),
+                                    snippet=snippet(source, kw.value.lineno),
                                 )],
                                 confidence=0.9,
                             ))
@@ -402,7 +403,7 @@ def _ast_full_scan(
                                     value_redacted=_redact(val),
                                     evidence=[Evidence(
                                         file=rel, line=node.lineno,
-                                        snippet=_snippet(source, node.lineno),
+                                        snippet=snippet(source, node.lineno),
                                     )],
                                     confidence=0.75,
                                 ))
@@ -478,11 +479,6 @@ def _first_str_arg(node: ast.Call) -> str | None:
     return None
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""
 
 
 def _snippet_from_file(fpath: Path, lineno: int) -> str:

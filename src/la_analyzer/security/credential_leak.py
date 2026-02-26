@@ -6,7 +6,9 @@ import ast
 import re
 from pathlib import Path
 
-from la_analyzer.security.models import Evidence, CredentialLeakRisk
+from la_analyzer.analyzer.models import Evidence
+from la_analyzer.security.models import SecurityFinding
+from la_analyzer.utils import snippet
 
 # Variable names that likely hold secrets
 _SECRET_VAR_RE = re.compile(
@@ -32,9 +34,9 @@ _WRITE_ATTRS = {"write", "dump", "dumps", "to_json", "to_csv"}
 _LLM_ATTRS = {"create", "generate", "complete", "chat"}
 
 
-def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[CredentialLeakRisk]:
+def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[SecurityFinding]:
     """Scan for credentials flowing to unsafe sinks."""
-    risks: list[CredentialLeakRisk] = []
+    risks: list[SecurityFinding] = []
     seen: set[str] = set()
 
     for fpath in py_files:
@@ -105,13 +107,15 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                         key = f"{rel}:{node.lineno}:environ_dump"
                         if key not in seen:
                             seen.add(key)
-                            risks.append(CredentialLeakRisk(
+                            risks.append(SecurityFinding(
+                                category="credential_leak",
+                                title="Credential leak: os.environ → log_output",
                                 credential_name="os.environ",
                                 leak_target="log_output",
                                 description="os.environ is iterated/dumped — may expose all environment secrets",
                                 evidence=[Evidence(
                                     file=rel, line=node.lineno,
-                                    snippet=_snippet(source, node.lineno),
+                                    snippet=snippet(source, node.lineno),
                                 )],
                                 severity="high",
                             ))
@@ -124,7 +128,7 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
             if not isinstance(node, ast.Call):
                 continue
 
-            ev = Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
+            ev = Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
             names_in_call = _collect_names(node)
             leaked_vars = names_in_call & secret_vars
 
@@ -145,11 +149,14 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
             # Check 1: secrets in print/logging calls
             if func_name in _LOG_FUNCS or func_name in _LOG_ATTRS:
                 seen.add(key)
-                risks.append(CredentialLeakRisk(
+                risks.append(SecurityFinding(
+                    category="credential_leak",
+                    title=f"Credential leak: {cred_name} → log_output",
                     credential_name=cred_name,
                     leak_target="log_output",
                     description=f"Secret variable(s) {cred_name} passed to {func_name}() — may appear in logs",
                     evidence=[ev],
+                    severity="high",
                 ))
                 continue
 
@@ -167,7 +174,9 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                     # Secret used as HTTP auth header — expected, legitimate service auth. Not a finding.
                     pass
                 elif body_auth:
-                    risks.append(CredentialLeakRisk(
+                    risks.append(SecurityFinding(
+                        category="credential_leak",
+                        title=f"Credential leak: {cred_name} → http_request",
                         credential_name=cred_name,
                         leak_target="http_request",
                         description=(
@@ -178,7 +187,9 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                         severity="medium",
                     ))
                 else:
-                    risks.append(CredentialLeakRisk(
+                    risks.append(SecurityFinding(
+                        category="credential_leak",
+                        title=f"Credential leak: {cred_name} → http_request",
                         credential_name=cred_name,
                         leak_target="http_request",
                         description=f"Secret variable(s) {cred_name} used in HTTP {func_name}() call",
@@ -190,22 +201,28 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
             # Check 3: secrets in LLM prompt construction
             if func_name in _LLM_ATTRS:
                 seen.add(key)
-                risks.append(CredentialLeakRisk(
+                risks.append(SecurityFinding(
+                    category="credential_leak",
+                    title=f"Credential leak: {cred_name} → llm_prompt",
                     credential_name=cred_name,
                     leak_target="llm_prompt",
                     description=f"Secret variable(s) {cred_name} passed to LLM {func_name}() call",
                     evidence=[ev],
+                    severity="high",
                 ))
                 continue
 
             # Check 4: secrets in file write calls
             if func_name in _WRITE_ATTRS:
                 seen.add(key)
-                risks.append(CredentialLeakRisk(
+                risks.append(SecurityFinding(
+                    category="credential_leak",
+                    title=f"Credential leak: {cred_name} → output_file",
                     credential_name=cred_name,
                     leak_target="output_file",
                     description=f"Secret variable(s) {cred_name} written to file via {func_name}()",
                     evidence=[ev],
+                    severity="high",
                 ))
                 continue
 
@@ -235,14 +252,17 @@ def scan_credential_leaks(workspace: Path, py_files: list[Path]) -> list[Credent
                                     key = f"{rel}:{arg.lineno}:{cred}"
                                     if key not in seen:
                                         seen.add(key)
-                                        risks.append(CredentialLeakRisk(
+                                        risks.append(SecurityFinding(
+                                            category="credential_leak",
+                                            title=f"Credential leak: {cred} → log_output",
                                             credential_name=cred,
                                             leak_target="log_output",
                                             description=f"Secret {cred} interpolated in f-string passed to {func_name}()",
                                             evidence=[Evidence(
                                                 file=rel, line=arg.lineno,
-                                                snippet=_snippet(source, arg.lineno),
+                                                snippet=snippet(source, arg.lineno),
                                             )],
+                                            severity="high",
                                         ))
 
     return risks
@@ -372,8 +392,3 @@ def _collect_names(node: ast.AST) -> set[str]:
     return names
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""

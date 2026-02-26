@@ -328,16 +328,9 @@ class _SecurityReportPDF:
             self._pdf.ln(4)
             return
 
-        # Gate decision -- colored background card
-        if s.deploy_blocked:
-            gate = "blocked"
-            gate_label = "BLOCKED -- Critical findings should be resolved before deployment."
-        elif s.requires_review:
-            gate = "review"
-            gate_label = "REVIEW REQUIRED -- High-severity findings should be reviewed."
-        else:
-            gate = "pass"
-            gate_label = "PASS -- No critical or high-severity findings."
+        # Gate decision -- colored background card (wording comes from the model)
+        gate = s.gate_status
+        gate_label = s.gate_message
 
         text_c, bg_c = _GATE_COLORS[gate]
 
@@ -347,7 +340,8 @@ class _SecurityReportPDF:
 
         # Pre-calculate card height: gate label + severity row + risks
         risks = top_risks(self._result)
-        card_h = 8 + 10 + (len(risks) * 5 if risks else 0) + 6
+        # Use 7pt per risk (vs content width) to budget for potential line-wrapping.
+        card_h = 8 + 10 + (len(risks) * 7 if risks else 0) + 6
 
         self._ensure_space(card_h + 5)
         card_y = self._pdf.get_y()
@@ -559,22 +553,16 @@ class _SecurityReportPDF:
         if not s:
             return
 
-        has_content = (
-            s.findings or s.data_flow_risks or s.credential_leak_risks
-            or s.data_classifications
-            or (s.agent_scan and s.agent_scan.findings)
-        )
-        if not has_content:
+        if not s.findings and not s.data_classifications:
             return
 
         self._divider()
         self._heading("Security Findings")
 
-        # Code / vuln / resource findings
+        # All findings in one sorted pass — category-specific inline extras per type
         if s.findings:
-            for f in sorted(s.findings, key=lambda x: sev_order(x.severity)):
+            for f in sorted(s.findings, key=lambda x: (sev_order(x.severity), x.category)):
                 self._ensure_space(25)
-                # Title line with severity badge (strip Bandit codes)
                 title = strip_bandit_prefix(f.title)
                 self._severity_badge(f.severity)
                 self._pdf.set_font("Helvetica", "B", 10)
@@ -582,22 +570,37 @@ class _SecurityReportPDF:
                 self._pdf.cell(self._content_w - 25, 5, self._safe(title), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
                 self._pdf.ln(1)
 
-                # Category
                 self._pdf.set_font("Helvetica", "", 8)
                 self._pdf.set_text_color(*_MUTED)
                 self._pdf.cell(self._content_w, 4, self._safe(f"Category: {f.category}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
 
-                # Description
                 self._set_body_text()
                 self._pdf.multi_cell(self._content_w, 4, self._safe(f.description), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
 
-                # Recommendation
+                # Category-specific inline details
+                if f.category == "data_flow" and f.data_sink:
+                    pii = ", ".join(f.pii_fields) if f.pii_fields else "none"
+                    self._pdf.set_font("Helvetica", "", 8)
+                    self._pdf.set_text_color(*_MUTED)
+                    self._pdf.multi_cell(
+                        self._content_w, 4,
+                        self._safe(f"Source: {f.data_source} | Sink: {f.data_sink} | PII: {pii}"),
+                        new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT,
+                    )
+                elif f.category == "credential_leak" and f.credential_name:
+                    self._pdf.set_font("Helvetica", "", 8)
+                    self._pdf.set_text_color(*_MUTED)
+                    self._pdf.cell(
+                        self._content_w, 4,
+                        self._safe(f"Credential: {f.credential_name} -> {leak_label(f.leak_target or '')}"),
+                        new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT,
+                    )
+
                 if f.recommendation:
                     self._pdf.set_font("Helvetica", "I", 8)
                     self._pdf.set_text_color(*_MUTED)
                     self._pdf.multi_cell(self._content_w, 4, self._safe(f"Recommendation: {f.recommendation}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
 
-                # Evidence
                 if f.evidence:
                     self._pdf.set_font("Courier", "", 7.5)
                     self._pdf.set_text_color(*_MUTED)
@@ -614,74 +617,6 @@ class _SecurityReportPDF:
                 fields = ", ".join(dc.fields_detected[:10])
                 self._bullet(f"{dc.category} ({dc.confidence:.0%}): {fields}")
             self._pdf.ln(2)
-
-        # Data flow risks
-        if s.data_flow_risks:
-            self._heading("Data Flow Risks", 3)
-            for df in sorted(s.data_flow_risks, key=lambda x: sev_order(x.severity)):
-                self._ensure_space(12)
-                self._pdf.set_x(19)
-                self._severity_badge(df.severity)
-                self._pdf.set_font("Helvetica", "B", 9)
-                self._pdf.set_text_color(*_BODY)
-                pii = ", ".join(df.pii_fields_in_path) if df.pii_fields_in_path else "none"
-                self._pdf.multi_cell(
-                    self._content_w - 30, 4.5,
-                    self._safe(f"{df.data_source} -> {df.data_sink} (PII: {pii})"),
-                    new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT,
-                )
-                self._pdf.set_font("Helvetica", "", 8)
-                self._pdf.set_text_color(*_MUTED)
-                self._pdf.set_x(19)
-                self._pdf.multi_cell(self._content_w - 4, 3.5, self._safe(df.description), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                if df.evidence:
-                    self._pdf.set_font("Courier", "", 7)
-                    for e in df.evidence:
-                        self._pdf.set_x(21)
-                        self._pdf.multi_cell(self._content_w - 6, 3.5, self._safe(f"{e.file}:{e.line}  {e.snippet}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._pdf.ln(2)
-
-        # Credential leak risks
-        if s.credential_leak_risks:
-            self._heading("Credential Leak Risks", 3)
-            for cl in s.credential_leak_risks:
-                self._ensure_space(12)
-                self._pdf.set_x(19)
-                self._severity_badge(cl.severity)
-                self._pdf.set_font("Helvetica", "", 9)
-                self._pdf.set_text_color(*_BODY)
-                self._pdf.multi_cell(
-                    self._content_w - 30, 4.5,
-                    self._safe(f"{cl.credential_name} -> {cl.leak_target}: {cl.description}"),
-                    new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT,
-                )
-                if cl.evidence:
-                    self._pdf.set_font("Courier", "", 7)
-                    self._pdf.set_text_color(*_MUTED)
-                    for e in cl.evidence:
-                        self._pdf.set_x(21)
-                        self._pdf.multi_cell(self._content_w - 6, 3.5, self._safe(f"{e.file}:{e.line}  {e.snippet}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._pdf.ln(2)
-
-        # Agent & skill security
-        if s.agent_scan and s.agent_scan.findings:
-            self._heading("Agent & Skill Security", 3)
-            for af in sorted(s.agent_scan.findings, key=lambda x: sev_order(x.severity)):
-                self._ensure_space(15)
-                self._severity_badge(af.severity)
-                self._pdf.set_font("Helvetica", "B", 9)
-                self._pdf.set_text_color(*_BODY)
-                self._pdf.cell(self._content_w - 25, 5, self._safe(af.title), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._pdf.set_font("Helvetica", "", 8)
-                self._pdf.set_text_color(*_MUTED)
-                self._pdf.cell(self._content_w, 4, self._safe(f"Category: {af.category} | {af.file}:{af.line}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._set_body_text()
-                self._pdf.multi_cell(self._content_w, 4, self._safe(af.description), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                if af.recommendation:
-                    self._pdf.set_font("Helvetica", "I", 8)
-                    self._pdf.set_text_color(*_MUTED)
-                    self._pdf.multi_cell(self._content_w, 4, self._safe(f"Recommendation: {af.recommendation}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._pdf.ln(2)
 
         # Per-entrypoint effect tables
         p = self._result.projection
@@ -852,11 +787,6 @@ class _SecurityReportPDF:
             self._heading("External connections", 3)
             for c in a.egress.outbound_calls[:10]:
                 self._bullet(f"{c.library} ({c.kind})")
-            gw = a.egress.suggested_gateway_needs
-            if gw.needs_llm_gateway:
-                models = ", ".join(gw.requested_models) if gw.requested_models else "unknown"
-                self._set_body_text()
-                self._pdf.multi_cell(self._content_w, 4.5, self._safe(f"LLM gateway recommended. Models: {models}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
             self._pdf.ln(2)
 
         self._set_body_text()
@@ -921,45 +851,3 @@ class _SecurityReportPDF:
 
         self._pdf.ln(3)
 
-    # ── 9. Recommendations ─────────────────────────────────────────────
-
-    def _render_recommendations(self) -> None:
-        a = self._result.analysis
-        if not a.porting_plan.required_changes and not a.porting_plan.optional_changes:
-            return
-
-        self._heading("Recommendations")
-
-        if a.porting_plan.summary:
-            self._set_body_text()
-            self._pdf.multi_cell(self._content_w, 4.5, self._safe(a.porting_plan.summary), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-            self._pdf.ln(2)
-
-        if a.porting_plan.required_changes:
-            self._heading("Required Changes", 3)
-            for ch in a.porting_plan.required_changes:
-                self._ensure_space(12)
-                # Type in code style
-                self._pdf.set_font("Courier", "B", 8)
-                self._pdf.set_text_color(*_BODY)
-                self._pdf.cell(self._content_w, 4, self._safe(ch.type), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                # Description
-                self._set_body_text()
-                self._pdf.multi_cell(self._content_w, 4, self._safe(ch.description), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                # Fix suggestion
-                if ch.suggested_fix:
-                    self._pdf.set_font("Helvetica", "I", 8)
-                    self._pdf.set_text_color(*_MUTED)
-                    self._pdf.multi_cell(self._content_w, 4, self._safe(f"Fix: {ch.suggested_fix}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._pdf.ln(2)
-
-        if a.porting_plan.optional_changes:
-            self._heading("Optional Changes", 3)
-            for ch in a.porting_plan.optional_changes:
-                self._ensure_space(10)
-                self._pdf.set_font("Courier", "B", 8)
-                self._pdf.set_text_color(*_BODY)
-                self._pdf.cell(self._content_w, 4, self._safe(ch.type), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._set_body_text()
-                self._pdf.multi_cell(self._content_w, 4, self._safe(ch.description), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-                self._pdf.ln(2)

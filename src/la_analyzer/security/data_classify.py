@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from la_analyzer.security.models import Evidence, DataClassification
+from la_analyzer.utils import snippet
 
 # ── PII field name patterns ──────────────────────────────────────────────────
 
@@ -103,12 +104,12 @@ def classify_data(workspace: Path, py_files: list[Path]) -> list[DataClassificat
                 for alias in node.names:
                     if alias.name in ("hashlib", "bcrypt"):
                         hashing_evidence.append(
-                            Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
+                            Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
                         )
             if isinstance(node, ast.ImportFrom) and node.module:
                 if node.module in ("hashlib", "bcrypt"):
                     hashing_evidence.append(
-                        Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
+                        Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
                     )
 
         _ast_classify(tree, source, rel, categories)
@@ -206,7 +207,7 @@ def _ast_classify(
                             strings_to_check.append((elt.value, node.value.lineno))
 
         for val, lineno in strings_to_check:
-            ev = Evidence(file=rel, line=lineno, snippet=_snippet(source, lineno))
+            ev = Evidence(file=rel, line=lineno, snippet=snippet(source, lineno))
             _check_field(val, ev, categories)
 
         # Check for PII regex patterns in re.compile() args
@@ -215,7 +216,7 @@ def _ast_classify(
             if isinstance(func, ast.Attribute) and func.attr in ("compile", "match", "search", "findall"):
                 arg = _first_str_arg(node)
                 if arg:
-                    ev = Evidence(file=rel, line=node.lineno, snippet=_snippet(source, node.lineno))
+                    ev = Evidence(file=rel, line=node.lineno, snippet=snippet(source, node.lineno))
                     for pat, label in _PII_REGEX_PATTERNS:
                         if pat.search(arg):
                             categories["pii"].append(
@@ -278,8 +279,3 @@ def _first_str_arg(node: ast.Call) -> str | None:
     return None
 
 
-def _snippet(source: str, lineno: int) -> str:
-    lines = source.splitlines()
-    if 0 < lineno <= len(lines):
-        return lines[lineno - 1].strip()[:160]
-    return ""
