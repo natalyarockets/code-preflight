@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from la_analyzer.security.models import SecurityReport
+from la_analyzer.security.models import SecurityReport, SecurityFinding, Evidence as SecEvidence
 from la_analyzer.security.code_scan import scan_code
 from la_analyzer.security.data_classify import classify_data
 from la_analyzer.security.data_flow import scan_data_flow
@@ -119,12 +119,44 @@ def run_security_review(
         from la_analyzer.ir.queries import run_all_queries
         effect_graph = build_effect_graph(workspace_dir, py_files)
         ir_findings = run_all_queries(effect_graph, existing_findings=code_findings + vuln_findings + resource_findings)
+        ir_findings = [
+            f.model_copy(update={"origin": "ir_query"})
+            for f in ir_findings
+        ]
         log.info("IR graph queries: %d findings", len(ir_findings))
     except Exception:
         log.exception("IR graph scan failed")
 
+    # Convert analysis secrets to first-class security findings
+    secrets_as_findings: list[SecurityFinding] = []
+    if analysis_result and hasattr(analysis_result, "secrets"):
+        _sev_map = {"hardcoded_key": "high", "dotenv_file": "high", "token_like": "medium"}
+        for sf in analysis_result.secrets.findings:
+            sev = _sev_map.get(sf.kind, "low")
+            label = sf.name_hint or sf.kind
+            value = f" ({sf.value_redacted})" if sf.value_redacted else ""
+            evidence = [
+                SecEvidence(file=e.file, line=e.line, snippet=getattr(e, "snippet", "") or "")
+                for e in sf.evidence
+            ]
+            secrets_as_findings.append(SecurityFinding(
+                category="secrets",
+                severity=sev,
+                title=f"Hardcoded secret: {label}",
+                description=(
+                    f"{sf.kind} found in source code{value}. "
+                    f"Hardcoded credentials are accessible to anyone with repository access "
+                    f"and will be exposed if the code is shared or version-controlled."
+                ),
+                evidence=evidence,
+                recommendation=(
+                    f"Move to environment variable: os.environ['{sf.name_hint or 'SECRET_KEY'}']. "
+                    f"Remove from source and rotate the credential if already committed."
+                ),
+            ))
+
     # Merge all findings
-    all_findings = code_findings + vuln_findings + resource_findings + ir_findings
+    all_findings = code_findings + vuln_findings + resource_findings + ir_findings + secrets_as_findings
 
     # Compute severity counts
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -146,23 +178,17 @@ def run_security_review(
     secrets_found = 0
     egress_endpoints = 0
     hardcoded_paths = 0
-    secrets_gate_triggered = False  # True if secrets warrant review (listed in Trust Boundaries)
     if analysis_result:
         if hasattr(analysis_result, "secrets"):
             secrets_found = len(analysis_result.secrets.findings)
-            for sf in analysis_result.secrets.findings:
-                if sf.kind in ("hardcoded_key", "dotenv_file"):
-                    secrets_gate_triggered = True
-                    break
         if hasattr(analysis_result, "egress"):
             egress_endpoints = len(analysis_result.egress.outbound_calls)
         if hasattr(analysis_result, "io"):
             hardcoded_paths = len(analysis_result.io.hardcoded_paths)
 
-    # Gate decision: counts only cover what appears in Security Findings;
-    # secrets are listed in Trust Boundaries and trigger the gate separately.
+    # Gate decision: derived purely from severity counts.
     deploy_blocked = severity_counts["critical"] > 0
-    requires_review = severity_counts["high"] > 0 or secrets_gate_triggered
+    requires_review = severity_counts["high"] > 0
 
     report = SecurityReport(
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -170,7 +196,7 @@ def run_security_review(
         data_classifications=data_classifications,
         data_flow_risks=data_flow_risks,
         credential_leak_risks=credential_leaks,
-        ir_findings=ir_findings,
+        ir_query_count=len(ir_findings),
         critical_count=severity_counts["critical"],
         high_count=severity_counts["high"],
         medium_count=severity_counts["medium"],

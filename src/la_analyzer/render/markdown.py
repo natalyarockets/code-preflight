@@ -65,9 +65,6 @@ def render_markdown(result: ScanResult) -> str:
     # 8. Scan toolchain audit trail
     sections.append(_render_toolchain(result))
 
-    # 9. Recommendations
-    sections.append(_render_recommendations(result))
-
     return "\n".join(s for s in sections if s)
 
 
@@ -102,10 +99,7 @@ def _render_summary_card(result: ScanResult) -> str:
         if s.deploy_blocked:
             lines.append("> **BLOCKED** -- Critical findings should be resolved before deployment.\n")
         elif s.requires_review:
-            if s.high_count > 0:
-                lines.append("> **REVIEW REQUIRED** -- High-severity findings should be reviewed.\n")
-            else:
-                lines.append("> **REVIEW REQUIRED** -- Secrets detected in this codebase, see Trust Boundaries.\n")
+            lines.append("> **REVIEW REQUIRED** -- High-severity findings should be reviewed.\n")
         else:
             lines.append("> **PASS** -- No critical or high-severity findings.\n")
 
@@ -119,7 +113,7 @@ def _render_summary_card(result: ScanResult) -> str:
         # Top risks as actionable sentences
         top_risks_ = top_risks(result)
         if top_risks_:
-            lines.append("**Top risks:**\n")
+            lines.append(f"**High / critical findings ({len(top_risks_)}):**\n")
             for risk in top_risks_:
                 lines.append(f"- {risk}")
             lines.append("")
@@ -137,33 +131,16 @@ def _render_trust_boundaries(result: ScanResult) -> str:
     s = result.security
     lines: list[str] = []
 
-    has_egress = bool(a.egress.outbound_calls)
-    has_secrets = bool(a.secrets.findings)
-
-    if not (has_egress or has_secrets):
+    if not a.egress.outbound_calls:
         return ""
 
     lines.append("## Trust Boundaries -- What Leaves This Repo\n")
-
-    # Data egress
-    if has_egress:
-        lines.append("### Data Egress\n")
-        for call in a.egress.outbound_calls:
-            domains = ", ".join(call.domains) if call.domains else "unknown"
-            loc = f"`{call.evidence[0].file}:{call.evidence[0].line}`" if call.evidence else ""
-            lines.append(f"- **{call.kind}** via `{call.library}` -> {domains} {loc}")
-        lines.append("")
-
-    # Secrets found
-    if has_secrets:
-        lines.append("### Secrets Detected\n")
-        for sf in a.secrets.findings:
-            hint = f" (`{sf.name_hint}`)" if sf.name_hint else ""
-            loc = f"`{sf.evidence[0].file}:{sf.evidence[0].line}`" if sf.evidence else ""
-            lines.append(f"- **{sf.kind}**{hint}: `{sf.value_redacted}` {loc}")
-        lines.append("")
-        if a.secrets.suggested_env_vars:
-            lines.append("Suggested env vars: " + ", ".join(f"`{v}`" for v in a.secrets.suggested_env_vars) + "\n")
+    lines.append("### Data Egress\n")
+    for call in a.egress.outbound_calls:
+        domains = ", ".join(call.domains) if call.domains else "unknown"
+        loc = f"`{call.evidence[0].file}:{call.evidence[0].line}`" if call.evidence else ""
+        lines.append(f"- **{call.kind}** via `{call.library}` -> {domains} {loc}")
+    lines.append("")
 
     return "\n".join(lines)
 

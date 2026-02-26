@@ -131,22 +131,46 @@ def test_render_top_risks():
     assert "log/print output" in md
 
 
+def test_top_risks_preserves_all_severe_findings_for_count_alignment():
+    """Top risks should preserve all severe findings so list length matches summary counts."""
+    ir_finding = SecurityFinding(
+        category="auth",
+        severity="high",
+        title="Unauthenticated Route: GET /x",
+        description="Route has no auth",
+        evidence=[SecEvidence(file="app.py", line=10, snippet="GET /x")],
+        origin="ir_query",
+    )
+    security = SecurityReport(
+        findings=[ir_finding, ir_finding],
+        ir_query_count=2,
+        high_count=2,
+        requires_review=True,
+    )
+    result = _make_result(security=security)
+    from la_analyzer.render._helpers import top_risks
+    risks = top_risks(result)
+    assert risks.count("GET /x (unauthenticated route) at app.py:10") == 2
+
+
 # -- Trust Boundary Tests ------------------------------------------------------
 
 
 def test_render_trust_boundaries():
-    """Trust boundary section shows egress and secrets only; findings go in Security Findings."""
+    """Trust boundary section shows egress only; secrets and findings go in Security Findings."""
     analysis = _minimal_analysis()
     analysis.egress = EgressReport(outbound_calls=[OutboundCall(
         kind="llm_sdk", library="openai",
         evidence=[Evidence(file="ai.py", line=3, snippet="client = openai.OpenAI()")],
     )])
-    analysis.secrets = SecretsReport(findings=[SecretFinding(
-        kind="hardcoded_key", name_hint="API_KEY", value_redacted="****abcd",
-        evidence=[Evidence(file="config.py", line=1, snippet='API_KEY = "sk-..."')],
-    )])
 
     security = SecurityReport(
+        findings=[SecurityFinding(
+            category="secrets", severity="high",
+            title="Hardcoded secret: API_KEY",
+            description="hardcoded_key found in source code",
+            evidence=[SecEvidence(file="config.py", line=1, snippet='API_KEY = "sk-..."')],
+        )],
         credential_leak_risks=[CredentialLeakRisk(
             credential_name="API_KEY",
             leak_target="llm_prompt",
@@ -161,20 +185,19 @@ def test_render_trust_boundaries():
             evidence=[SecEvidence(file="ai.py", line=15, snippet="client.create(...)")],
             severity="high",
         )],
-        high_count=1, requires_review=True,
+        high_count=2, requires_review=True,
     )
 
     result = _make_result(analysis=analysis, security=security)
     md = render_markdown(result)
 
-    # Trust Boundaries: egress and secrets only
+    # Trust Boundaries: egress only
     assert "Trust Boundaries" in md
     assert "Data Egress" in md
     assert "openai" in md
-    assert "Secrets Detected" in md
-    # Credential leaks and data flow risks appear in Security Findings, not Trust Boundaries
-    assert "Credential Exposure" not in md
-    assert "PII Flow" not in md
+    assert "Secrets Detected" not in md
+    # Secrets, credential leaks, and data flow risks all in Security Findings
+    assert "Hardcoded secret" in md
     assert "Credential Leak Risks" in md
     assert "API_KEY" in md
     assert "Data Flow Risks" in md

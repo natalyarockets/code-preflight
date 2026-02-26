@@ -203,10 +203,7 @@ def executive_summary(result: ScanResult) -> list[str]:
         if s.deploy_blocked:
             bullets.append("Critical issues should be resolved before deployment.")
         elif s.requires_review:
-            if s.high_count > 0:
-                bullets.append("High-severity findings should be reviewed before deployment.")
-            else:
-                bullets.append("Secrets detected in this codebase; verify they are not exposed in logs or version control.")
+            bullets.append("High-severity findings should be reviewed before deployment.")
         else:
             bullets.append("No critical or high-severity issues detected.")
 

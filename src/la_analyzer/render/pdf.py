@@ -335,10 +335,7 @@ class _SecurityReportPDF:
             gate_label = "BLOCKED -- Critical findings should be resolved before deployment."
         elif s.requires_review:
             gate = "review"
-            if s.high_count > 0:
-                gate_label = "REVIEW REQUIRED -- High-severity findings should be reviewed."
-            else:
-                gate_label = "REVIEW REQUIRED -- Secrets detected in this codebase, see Trust Boundaries."
+            gate_label = "REVIEW REQUIRED -- High-severity findings should be reviewed."
         else:
             gate = "pass"
             gate_label = "PASS -- No critical or high-severity findings."
@@ -393,7 +390,13 @@ class _SecurityReportPDF:
             self._pdf.set_xy(card_x + 4, card_y + 20)
             self._pdf.set_font("Helvetica", "B", 8)
             self._pdf.set_text_color(*text_c)
-            self._pdf.cell(self._content_w - 8, 4, "Top risks:", new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
+            self._pdf.cell(
+                self._content_w - 8,
+                4,
+                self._safe(f"High / critical findings ({len(risks)}):"),
+                new_x=self._XPos.LMARGIN,
+                new_y=self._YPos.NEXT,
+            )
             self._pdf.set_font("Helvetica", "", 8)
             for risk in risks:
                 self._pdf.set_x(card_x + 6)
@@ -408,34 +411,16 @@ class _SecurityReportPDF:
         a = self._result.analysis
         s = self._result.security
 
-        has_egress = bool(a.egress.outbound_calls)
-        has_secrets = bool(a.secrets.findings)
-
-        if not (has_egress or has_secrets):
+        if not a.egress.outbound_calls:
             return
 
         self._heading("Trust Boundaries -- What Leaves This Repo")
-
-        if has_egress:
-            self._heading("Data Egress", 3)
-            for call in a.egress.outbound_calls:
-                domains = ", ".join(call.domains) if call.domains else "unknown"
-                loc = f" ({call.evidence[0].file}:{call.evidence[0].line})" if call.evidence else ""
-                self._bullet(f"{call.kind} via {call.library} -> {domains}{loc}")
-            self._pdf.ln(2)
-
-        if has_secrets:
-            self._heading("Secrets Detected", 3)
-            for sf in a.secrets.findings:
-                hint = f" ({sf.name_hint})" if sf.name_hint else ""
-                loc = f" ({sf.evidence[0].file}:{sf.evidence[0].line})" if sf.evidence else ""
-                self._bullet(f"{sf.kind}{hint}: {sf.value_redacted}{loc}")
-            if a.secrets.suggested_env_vars:
-                self._pdf.ln(1)
-                self._set_body_text()
-                env_vars = ", ".join(a.secrets.suggested_env_vars)
-                self._pdf.multi_cell(self._content_w, 4.5, self._safe(f"Suggested env vars: {env_vars}"), new_x=self._XPos.LMARGIN, new_y=self._YPos.NEXT)
-            self._pdf.ln(2)
+        self._heading("Data Egress", 3)
+        for call in a.egress.outbound_calls:
+            domains = ", ".join(call.domains) if call.domains else "unknown"
+            loc = f" ({call.evidence[0].file}:{call.evidence[0].line})" if call.evidence else ""
+            self._bullet(f"{call.kind} via {call.library} -> {domains}{loc}")
+        self._pdf.ln(2)
 
     # ── 3b. LLM Prompt Analysis ─────────────────────────────────────────
 

@@ -58,11 +58,9 @@ la-scan ./myproject -v                       # Verbose logging
 The report opens with **"If You Deploy This As-Is"**: a plain-English summary of what happens if you ship the code right now. Then:
 
 - **Security gate** -- PASS, REVIEW REQUIRED, or BLOCKED. The severity count table (Critical / High / Medium / Low) is an exact aggregate of what is listed in Security Findings — every number has a corresponding item below it.
-- **Trust boundaries** -- every external service your code talks to (including observability and email), and any hardcoded secrets. Factual data only, no findings.
+- **Trust boundaries** -- every external service your code calls (LLM APIs, databases, observability, email). Factual egress data only.
 - **Entrypoint effect matrix** -- what each entrypoint reads, writes, sends, and exposes
-- **Security findings** -- detailed findings with severity, description, recommendation, and exact file/line
-- **Call graph** -- which functions call which, per entrypoint
-- **Recommendations** -- specific changes to make the code safer
+- **Security findings** -- one canonical list: code injection, credential leaks, data flow risks, hardcoded secrets, dependency CVEs, agent misconfigurations, IR graph findings. Everything with a severity is here and counted.
 
 ## Example
 
@@ -193,7 +191,7 @@ The capability registry (`ir/capability_registry.py`) is data-only: adding suppo
 | `egress_report.json` | Outbound calls, gateway recommendations |
 | `secrets_report.json` | Hardcoded keys, .env files, token patterns |
 | `deps_report.json` | Dependencies and sources |
-| `porting_plan.json` | Required and optional changes |
+| `porting_plan.json` | Detected hardcoded paths, outputs, and egress calls |
 | `description_report.json` | README content, module docstrings |
 | `security_report.json` | All findings (including IR graph findings), severity counts, gate decision |
 | `livingapps.yaml` | Generated app manifest |

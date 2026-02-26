@@ -199,18 +199,6 @@ def _collect_effects(
                 detail=", ".join(call.domains) if call.domains else "",
             ))
 
-    # Secrets
-    for sf in analysis.secrets.findings:
-        for ev in sf.evidence:
-            effects.append(ProjectedEffect(
-                source="secret",
-                title=f"Secret: {sf.kind}",
-                severity="high",
-                file=ev.file, line=ev.line,
-                function_name=ev.function_name,
-                detail=sf.name_hint or "",
-            ))
-
     # Prompt surfaces
     for ps in analysis.prompt_surface.surfaces:
         for ev in ps.evidence:
