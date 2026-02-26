@@ -57,8 +57,8 @@ la-scan ./myproject -v                       # Verbose logging
 
 The report opens with **"If You Deploy This As-Is"**: a plain-English summary of what happens if you ship the code right now. Then:
 
-- **Security gate** -- PASS, REVIEW REQUIRED, or BLOCKED, with severity counts and top risks
-- **Trust boundaries** -- every external service your code talks to (including observability and email), any credentials at risk of leaking, PII flowing to places it shouldn't, hardcoded secrets
+- **Security gate** -- PASS, REVIEW REQUIRED, or BLOCKED. The severity count table (Critical / High / Medium / Low) is an exact aggregate of what is listed in Security Findings — every number has a corresponding item below it.
+- **Trust boundaries** -- every external service your code talks to (including observability and email), and any hardcoded secrets. Factual data only, no findings.
 - **Entrypoint effect matrix** -- what each entrypoint reads, writes, sends, and exposes
 - **Security findings** -- detailed findings with severity, description, recommendation, and exact file/line
 - **Call graph** -- which functions call which, per entrypoint
@@ -223,12 +223,12 @@ result.analysis.state_flow.node_flows        # LangGraph state reads/writes
 
 # Phase 2: security review
 result.security.deploy_blocked        # True if critical findings
-result.security.requires_review       # True if high findings (incl. secrets)
-result.security.findings              # code injection, resource abuse, vulns, IR findings
-result.security.ir_findings           # effect graph query results only
-result.security.data_classifications  # PII, financial, health, credential
-result.security.data_flow_risks       # source -> sink traces
-result.security.credential_leak_risks
+result.security.requires_review       # True if high findings or secrets detected
+result.security.findings              # all findings: code injection, vulns, IR queries (origin="ir_query"), etc.
+result.security.ir_query_count        # number of findings produced by the effect graph IR
+result.security.data_classifications  # PII, financial, health, credential (informational, no severity)
+result.security.data_flow_risks       # source -> sink traces with severity
+result.security.credential_leak_risks # credential exposure findings with severity
 result.security.agent_scan            # agent/skill findings (or None)
 
 # Phase 3: effect projection

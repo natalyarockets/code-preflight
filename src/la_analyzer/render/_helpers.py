@@ -18,8 +18,19 @@ def sev_order(severity: str) -> int:
     return _SEV_ORDER.get(severity, 5)
 
 
-def top_risks(result: ScanResult, max_risks: int = 5) -> list[str]:
-    """Extract the top N most actionable risk descriptions."""
+def _summary_title(title: str) -> str:
+    """Shorten repetitive prefixes for readability in summary cards."""
+    if title.startswith("Unauthenticated Route: "):
+        return f"{title[len('Unauthenticated Route: '):]} (unauthenticated route)"
+    return title
+
+
+def top_risks(result: ScanResult, max_risks: int | None = None) -> list[str]:
+    """Extract actionable severe risk descriptions.
+
+    By default returns all critical/high risks so the list length matches the
+    severe finding counts shown in the summary.
+    """
     s = result.security
     if not s:
         return []
@@ -27,21 +38,23 @@ def top_risks(result: ScanResult, max_risks: int = 5) -> list[str]:
     risks: list[tuple[int, str]] = []
 
     for cl in s.credential_leak_risks:
-        prio = sev_order(cl.severity)
-        loc = f" at {cl.evidence[0].file}:{cl.evidence[0].line}" if cl.evidence else ""
-        risks.append((prio, f"Credential '{cl.credential_name}' exposed to {leak_label(cl.leak_target)}{loc}"))
+        if cl.severity in ("critical", "high"):
+            prio = sev_order(cl.severity)
+            loc = f" at {cl.evidence[0].file}:{cl.evidence[0].line}" if cl.evidence else ""
+            risks.append((prio, f"Credential '{cl.credential_name}' exposed to {leak_label(cl.leak_target)}{loc}"))
 
     for df in s.data_flow_risks:
-        prio = sev_order(df.severity)
-        pii = ", ".join(df.pii_fields_in_path[:3]) if df.pii_fields_in_path else "file data"
-        loc = f" at {df.evidence[0].file}:{df.evidence[0].line}" if df.evidence else ""
-        risks.append((prio, f"{pii} flows to {df.data_sink}{loc}"))
+        if df.severity in ("critical", "high"):
+            prio = sev_order(df.severity)
+            pii = ", ".join(df.pii_fields_in_path[:3]) if df.pii_fields_in_path else "file data"
+            loc = f" at {df.evidence[0].file}:{df.evidence[0].line}" if df.evidence else ""
+            risks.append((prio, f"{pii} flows to {df.data_sink}{loc}"))
 
     for f in s.findings:
         if f.severity in ("critical", "high"):
             prio = sev_order(f.severity)
             loc = f" at {f.evidence[0].file}:{f.evidence[0].line}" if f.evidence else ""
-            risks.append((prio, f"{f.title}{loc}"))
+            risks.append((prio, f"{_summary_title(f.title)}{loc}"))
 
     if s.agent_scan:
         for af in s.agent_scan.findings:
@@ -49,16 +62,11 @@ def top_risks(result: ScanResult, max_risks: int = 5) -> list[str]:
                 prio = sev_order(af.severity)
                 risks.append((prio, f"{af.title} at {af.file}:{af.line}"))
 
-    # IR graph findings
-    if hasattr(s, "ir_findings"):
-        for f in s.ir_findings:
-            if f.severity in ("critical", "high"):
-                prio = sev_order(f.severity)
-                loc = f" at {f.evidence[0].file}:{f.evidence[0].line}" if f.evidence else ""
-                risks.append((prio, f"{f.title}{loc}"))
-
     risks.sort(key=lambda x: x[0])
-    return [r[1] for r in risks[:max_risks]]
+    result_risks = [text for _prio, text in risks]
+    if max_risks is None:
+        return result_risks
+    return result_risks[:max_risks]
 
 
 def leak_label(target: str) -> str:
