@@ -98,7 +98,7 @@ def scan_resource_abuse(workspace: Path, py_files: list[Path]) -> list[SecurityF
                         receiver = node.func.value.id
                     if receiver in _HTTP_RECEIVERS and file_imports & _HTTP_LIBS:
                         parent = _find_parent_loop(tree, node)
-                        if parent and not _is_batched_for_loop(parent):
+                        if parent:
                             key = f"{rel}:{node.lineno}:network_loop"
                             if key not in seen:
                                 seen.add(key)
@@ -189,24 +189,6 @@ def _find_parent_loop(tree: ast.Module, target: ast.AST) -> ast.AST | None:
     return None
 
 
-def _is_batched_for_loop(loop: ast.AST) -> bool:
-    """Return True if the loop is an explicit batched range pattern.
-
-    Matches ``for i in range(start, stop, step)`` — three-argument range()
-    with a stride, which is the canonical Python batching idiom.  These loops
-    make a bounded, explicitly-sized set of requests and should not be flagged
-    as unbounded network abuse.
-    """
-    if not isinstance(loop, ast.For):
-        return False
-    iter_ = loop.iter
-    if not isinstance(iter_, ast.Call):
-        return False
-    func = iter_.func
-    if not (isinstance(func, ast.Name) and func.id == "range"):
-        return False
-    # range(start, stop, step) — exactly 3 positional args
-    return len(iter_.args) == 3
 
 
 def _call_attr(node: ast.Call) -> str | None:

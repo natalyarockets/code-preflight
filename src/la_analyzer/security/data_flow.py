@@ -121,12 +121,13 @@ def _analyze_scope(
     file_reads: list[tuple[str, int, str | None]] = []  # (var_name, line, path)
 
     for node in ast.walk(scope):
-        # Detect `with open(...) as var:` — mark var as file data
+        # Detect `with open(...) as var:` — only mark READ opens as file data.
+        # Write-mode handles (open("out.csv", "w") as f) are sinks, not sources.
         if isinstance(node, ast.With):
             for item in node.items:
                 if isinstance(item.context_expr, ast.Call):
                     call_name = _full_call_name(item.context_expr)
-                    if "open" in call_name.split("."):
+                    if "open" in call_name.split(".") and _is_read_open(item.context_expr):
                         var = item.optional_vars
                         if isinstance(var, ast.Name):
                             file_data_vars.add(var.id)
@@ -255,16 +256,8 @@ def _analyze_scope(
             method = node.func.attr
             if method not in _FILE_WRITE_METHODS:
                 continue
-            # For file-handle write methods (f.write, path.write_text, …) the
-            # receiver is the destination, not the data — exclude it so that a
-            # `with open(...) as f:` handle variable doesn't end up in tainted.
-            # For data-serialisation methods (df.to_csv, df.to_json, …) the
-            # receiver IS the data and must be kept in the tainted name set.
-            _FILE_HANDLE_METHODS = {"write", "write_text", "write_bytes"}
+            # Check receiver and args for tainted data
             call_names = _collect_names(node)
-            if method in _FILE_HANDLE_METHODS:
-                if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-                    call_names.discard(node.func.value.id)
             tainted = call_names & (file_data_vars | {v.split("[")[0] for v in pii_vars})
             if tainted:
                 pii_in_path = []
@@ -495,7 +488,7 @@ def _analyze_cross_function(
         if node.name in llm_caller_funcs:
             continue
 
-        # Track variables that receive return values from file-reader functions
+        # Seed: variables that directly receive return values from file-reader functions.
         file_data_vars: set[str] = set()
         for child in ast.walk(node):
             if isinstance(child, ast.Assign) and len(child.targets) == 1:
@@ -506,6 +499,38 @@ def _analyze_cross_function(
 
         if not file_data_vars:
             continue
+
+        # Propagate taint through derived variables until fixed point.
+        # Covers multi-step chains like:
+        #   text = extract_text(path)          # seeded above
+        #   chunks = chunk_text(text, ...)      # derived: text in call_names
+        #   all_chunks.extend(chunks)           # list mutation: chunks is tainted
+        #   embedded = embed_llm(all_chunks)    # propagates to embedded
+        changed = True
+        while changed:
+            changed = False
+            for child in ast.walk(node):
+                # Assignment: rhs references a tainted variable
+                if isinstance(child, ast.Assign) and len(child.targets) == 1:
+                    var_name = _target_name(child.targets[0])
+                    if var_name and var_name not in file_data_vars:
+                        if _collect_names(child.value) & file_data_vars:
+                            file_data_vars.add(var_name)
+                            changed = True
+                # list.extend(tainted) / list.append(tainted)
+                if isinstance(child, ast.Expr) and isinstance(child.value, ast.Call):
+                    call = child.value
+                    if (isinstance(call.func, ast.Attribute)
+                            and call.func.attr in ("extend", "append")
+                            and isinstance(call.func.value, ast.Name)):
+                        list_var = call.func.value.id
+                        if list_var not in file_data_vars:
+                            arg_tainted = any(
+                                _collect_names(a) & file_data_vars for a in call.args
+                            )
+                            if arg_tainted:
+                                file_data_vars.add(list_var)
+                                changed = True
 
         # Check if any file data var is passed as argument to an LLM-calling function
         for child in ast.walk(node):
@@ -569,6 +594,27 @@ def _collect_names(node: ast.AST) -> set[str]:
         if isinstance(child, ast.Name):
             names.add(child.id)
     return names
+
+
+def _is_read_open(call_node: ast.Call) -> bool:
+    """Return True if open() is in read mode (default or explicit 'r'/'rb').
+
+    Write ('w', 'a', 'x') and mixed write ('w+', 'r+') modes indicate a sink
+    (output file), not a source of file data, so the handle should not be
+    treated as a tainted variable.
+    """
+    _WRITE_MODES = {"w", "a", "x", "wb", "ab", "xb", "w+", "a+", "x+"}
+    # Positional mode: open(path, "w")
+    if len(call_node.args) >= 2:
+        mode_arg = call_node.args[1]
+        if isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str):
+            return mode_arg.value not in _WRITE_MODES
+    # Keyword mode: open(path, mode="w")
+    for kw in call_node.keywords:
+        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+            return kw.value.value not in _WRITE_MODES
+    # No mode argument → default is "r" (read)
+    return True
 
 
 def _find_fstrings_with_vars(node: ast.AST, source: str) -> list[tuple[list[str], int]]:
