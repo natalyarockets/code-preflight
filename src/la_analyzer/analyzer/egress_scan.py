@@ -70,6 +70,8 @@ _SDK_CONSTRUCTORS: dict[str, str] = {
     "Cohere": "cohere",
     "SMTP": "smtplib",
     "SMTP_SSL": "smtplib",
+    # HuggingFace Hub — direct inference client
+    "InferenceClient": "huggingface_hub",
     # Ollama — LangChain integration and direct client
     "ChatOllama": "ollama",
     "OllamaLLM": "ollama",

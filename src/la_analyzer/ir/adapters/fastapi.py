@@ -18,6 +18,13 @@ _ROUTE_DECORATORS = frozenset({
     "get", "post", "put", "patch", "delete", "head", "options", "websocket", "route",
 })
 
+# GET-only paths that are universally public by convention.
+# These never require authentication; flagging them creates noise that buries real issues.
+_PUBLIC_HEALTH_PATHS = frozenset({
+    "/", "/health", "/healthz", "/ping", "/status",
+    "/metrics", "/ready", "/live", "/liveness", "/readiness",
+})
+
 
 def emit_route_facts(
     tree: ast.Module,
@@ -57,7 +64,12 @@ def emit_route_facts(
         # Check for auth guards in function parameters
         has_auth = _check_auth_guards(node, rel, route_id, graph)
 
-        if not has_auth:
+        # GET-only paths that are universally public by convention are never flagged.
+        # Set unguarded=False explicitly so the query's default-True doesn't trigger.
+        is_public_health = method == "GET" and path in _PUBLIC_HEALTH_PATHS
+        if has_auth or is_public_health:
+            route_node.metadata["unguarded"] = False
+        else:
             route_node.metadata["unguarded"] = True
 
         # Check for Request.headers usage → emit HEADER_CONTROLLED sources
