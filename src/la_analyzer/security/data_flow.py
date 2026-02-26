@@ -255,8 +255,16 @@ def _analyze_scope(
             method = node.func.attr
             if method not in _FILE_WRITE_METHODS:
                 continue
-            # Check receiver and args for tainted data
+            # For file-handle write methods (f.write, path.write_text, …) the
+            # receiver is the destination, not the data — exclude it so that a
+            # `with open(...) as f:` handle variable doesn't end up in tainted.
+            # For data-serialisation methods (df.to_csv, df.to_json, …) the
+            # receiver IS the data and must be kept in the tainted name set.
+            _FILE_HANDLE_METHODS = {"write", "write_text", "write_bytes"}
             call_names = _collect_names(node)
+            if method in _FILE_HANDLE_METHODS:
+                if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                    call_names.discard(node.func.value.id)
             tainted = call_names & (file_data_vars | {v.split("[")[0] for v in pii_vars})
             if tainted:
                 pii_in_path = []

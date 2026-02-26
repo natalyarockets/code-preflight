@@ -174,24 +174,26 @@ def build_call_graph(
                 if isinstance(arg, ast.Lambda):
                     for lnode in ast.walk(arg.body):
                         if isinstance(lnode, ast.Call):
-                            lname = _extract_call_name(lnode)
-                            if lname:
+                            lresult = _extract_call_name(lnode)
+                            if lresult:
+                                lname, l_is_plain = lresult
                                 callee_id = _resolve_call(
                                     lname, rel, file_imports,
-                                    name_to_fids, functions,
+                                    name_to_fids, functions, l_is_plain,
                                 )
                                 if callee_id:
                                     edges.append(CallEdge(
                                         caller=caller_id, callee=callee_id,
                                     ))
 
-            call_name = _extract_call_name(node)
-            if not call_name:
+            call_result = _extract_call_name(node)
+            if not call_result:
                 continue
+            call_name, is_plain = call_result
 
             # Resolve the callee
             callee_id = _resolve_call(
-                call_name, rel, file_imports, name_to_fids, functions,
+                call_name, rel, file_imports, name_to_fids, functions, is_plain,
             )
             if callee_id:
                 edges.append(CallEdge(caller=caller_id, callee=callee_id))
@@ -287,13 +289,22 @@ def _collect_imports(
     return result
 
 
-def _extract_call_name(node: ast.Call) -> str | None:
-    """Extract a simple call name from a Call node."""
+def _extract_call_name(node: ast.Call) -> tuple[str, bool] | None:
+    """Extract call name and whether it is a plain (non-attribute) call.
+
+    Returns (name, is_plain_call) or None.
+    is_plain_call=True  for direct calls: ``func()``
+    is_plain_call=False for method calls: ``obj.method()``
+
+    Method calls on unknown receivers must not be resolved to module-level
+    functions — we have no type information to know if the receiver is the
+    same object.  The is_plain_call flag lets _resolve_call skip the local
+    function lookup for attribute calls.
+    """
     if isinstance(node.func, ast.Name):
-        return node.func.id
+        return node.func.id, True
     if isinstance(node.func, ast.Attribute):
-        # e.g. obj.method() -- return "method"
-        return node.func.attr
+        return node.func.attr, False
     return None
 
 
@@ -322,9 +333,17 @@ def _resolve_call(
     file_imports: dict[str, str],
     name_to_fids: dict[str, list[str]],
     functions: dict[str, FunctionNode],
+    is_plain_call: bool = True,
 ) -> str | None:
-    """Resolve a call name to a FunctionNode.id."""
-    # 1. Check if the name was imported
+    """Resolve a call name to a FunctionNode.id.
+
+    is_plain_call should be False for attribute/method calls (``obj.method()``).
+    In that case we skip local function resolution: without type information we
+    cannot know whether the receiver matches a locally defined function, and a
+    naive name match produces false edges (e.g. ``page.extract_text()`` ->
+    ``main.py::extract_text``).
+    """
+    # 1. Check if the name was imported (always safe — imports are explicit)
     if call_name in file_imports:
         target = file_imports[call_name]
         if target in functions:
@@ -334,10 +353,14 @@ def _resolve_call(
         parts = target.split("::")
         if len(parts) == 2:
             target_file, target_name = parts
-            # Try direct match
             direct = f"{target_file}::{target_name}"
             if direct in functions:
                 return direct
+
+    # 2 & 3 only apply to plain (non-attribute) calls.  For method calls on
+    # arbitrary receivers, skip: we'd need type inference to resolve correctly.
+    if not is_plain_call:
+        return None
 
     # 2. Local function in the same file
     local_id = f"{current_file}::{call_name}"

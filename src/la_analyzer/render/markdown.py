@@ -259,7 +259,10 @@ def _render_entrypoint_matrix(result: ScanResult) -> str:
             elif src == "secret":
                 secrets += 1
             elif src == "security":
-                if "pii" in title_lower or "data" in title_lower:
+                # Only count as PII when the finding explicitly identifies PII
+                # fields.  Generic data-flow findings ("data" in title but
+                # "PII: none") must not inflate this counter.
+                if "pii" in title_lower:
                     pii += 1
             elif src == "prompt":
                 prompts += 1

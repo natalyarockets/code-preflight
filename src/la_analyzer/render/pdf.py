@@ -527,7 +527,7 @@ class _SecurityReportPDF:
                 elif src == "secret":
                     secrets += 1
                 elif src == "security":
-                    if "pii" in title_lower or "data" in title_lower:
+                    if "pii" in title_lower:
                         pii += 1
                 elif src == "prompt":
                     prompts += 1
