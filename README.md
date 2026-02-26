@@ -59,8 +59,11 @@ The report opens with **"If You Deploy This As-Is"**: a plain-English summary of
 
 - **Security gate** -- PASS, REVIEW REQUIRED, or BLOCKED. The severity count table (Critical / High / Medium / Low) is an exact aggregate of what is listed in Security Findings — every number has a corresponding item below it.
 - **Trust boundaries** -- every external service your code calls (LLM APIs, databases, observability, email). Factual egress data only.
-- **Entrypoint effect matrix** -- what each entrypoint reads, writes, sends, and exposes
+- **Project structure** -- archetypes, entrypoints, dependencies, inputs/outputs, and external connections at a glance.
+- **LLM prompt analysis** -- every LLM call site with the runtime variables it injects.
+- **Entrypoint effect matrix** -- what each entrypoint reads, writes, sends, exposes, and calls (with prompt and tool counts).
 - **Security findings** -- one canonical list: code injection, credential leaks, data flow risks, hardcoded secrets, dependency CVEs, agent misconfigurations, IR graph findings. Everything with a severity is here and counted.
+- **Scan toolchain** -- which scanners ran, what version, and how many findings each produced.
 
 ## Example
 
@@ -75,16 +78,22 @@ $ la-scan examples/sample_batch_app
 
 - This app sends data to openai (api.openai.com).
 - Makes outbound HTTP requests to dynamically resolved URLs.
+- 1 LLM prompt site(s) inject runtime data (text).
 - 2 embedded secret(s) found (dotenv_file, hardcoded_key).
-- No critical or high-severity issues detected.
+- High-severity findings should be reviewed before deployment.
 
 ## Security Summary
 
-> **PASS** -- No critical or high-severity findings.
+> **REVIEW REQUIRED** -- High-severity findings should be reviewed.
 
 | Critical | High | Medium | Low |
 |---|---|---|---|
-| 0 | 0 | 2 | 0 |
+| 0 | 2 | 2 | 0 |
+
+**High / critical findings (2):**
+
+- Hardcoded secret: .env at .env:1
+- Hardcoded secret: API_KEY at main.py:13
 
 ## Trust Boundaries -- What Leaves This Repo
 
@@ -93,23 +102,53 @@ $ la-scan examples/sample_batch_app
 - **llm_sdk** via `openai` -> api.openai.com `main.py:23`
 - **http** via `requests` -> unknown `main.py:33`
 
-### Secrets Detected
+---
 
-- **hardcoded_key** (`API_KEY`): `*****************************mnop` `main.py:13`
+## Project Structure
+
+**Project**: `sample_batch_app` | **Archetypes**: python_batch (80%) | **Python files**: 1 | **Dependencies**: 4
+
+**Entrypoints**: `python main.py` (command, 100% (main.py))
+
+**Dependencies**: `pandas`, `openai`, `requests`, `python-dotenv`
+
+**Inputs**: `input_0` (file) | **Outputs**: `output_0`, `output_1`, `output_2` (artifact)
+
+**External connections**: `openai` (llm_sdk), `requests` (http)
+
+## LLM Prompt Analysis
+
+| Function | Method | Variables | Constants | Location |
+|---|---|---|---|---|
+| `enrich_with_llm` | create | `text` | - | `main.py:24` |
 
 ## Entrypoint Effect Matrix
 
-| Entrypoint | Reachable | Reads | Writes | Sends To | Secrets | PII | LLM |
-|---|---|---|---|---|---|---|---|
-| `python main.py` | 5 | 1 | 3 | 1 | 1 | 1 | 2 |
+| Entrypoint | Reachable | Reads | Writes | Sends To | Secrets | PII | LLM | Prompts | Tools |
+|---|---|---|---|---|---|---|---|---|---|
+| `python main.py` | 5 | 1 | 3 | 1 | 0 | 1 | 2 | 1 | 0 |
 
 ## Security Findings
+
+### [HIGH] Hardcoded secret: .env
+
+**Severity**: high | **Category**: secrets
+
+dotenv_file found in source code. Remove from source and rotate if already committed.
+
+  - `.env:1`
+
+### [HIGH] Hardcoded secret: API_KEY
+
+**Severity**: high | **Category**: secrets
+
+hardcoded_key found in source code (*****************************mnop).
+
+  - `main.py:13`
 
 ### [MEDIUM] Call to requests without timeout
 
 **Severity**: medium | **Category**: injection
-
-**Recommendation**: Review whether this pattern is necessary for this app's function.
 
   - `main.py:33`
 

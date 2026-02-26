@@ -17,14 +17,18 @@ def render_markdown(result: ScanResult) -> str:
     """Produce a full Markdown report from a ScanResult.
 
     Layout:
-    1. Title + one-line positioning
-    2. Security summary card (gate + severity + top risks)
-    3. Trust boundary summary (egress/credentials/PII)
-    4. Per-entrypoint effect matrix
-    5. Security findings (detailed)
-    6. Call graph (mermaid)
-    7. Project structure (condensed)
-    8. Recommendations
+    1. Title
+    2. Executive summary (If You Deploy This As-Is)
+    3. Security summary card (gate + severity + top risks)
+    4. Trust boundaries (egress only)
+    5. Project structure (condensed)
+    6. LLM prompt analysis
+    7. Tool registration map
+    8. State flow
+    9. Entrypoint effect matrix
+    10. Security findings (detailed)
+    11. Call graph (mermaid)
+    12. Scan toolchain appendix
     """
     sections: list[str] = []
     name = result.project_path.name
