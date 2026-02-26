@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_ir_graph.py tests/test_capability_registry.py tests/test_ir_abstract_values.py tests/test_ir_queries.py tests/test_ir_python_frontend.py -x -v 2>&1 | tail -60)",
+      "Bash(la-analyzer /Users/n/Documents/squawk_ai_be_POCnb 2>&1 | tail -60)",
+      "Bash(python -m la_analyzer.cli /Users/n/Documents/squawk_ai_be_POCnb 2>&1 | tail -100)",
+      "WebSearch",
+      "Bash(python -c \"from la_analyzer.analyzer.models import AnalysisResult; print\\('ok'\\)\" 2>&1)",
+      "Bash(python -c \"from la_analyzer.security.models import SecurityFinding, SecurityReport, Evidence; print\\('ok'\\)\" 2>&1)",
+      "Bash(python3 - <<'PYEOF'\nwith open\\(\"/Users/n/Documents/LA-analyzer/src/la_analyzer/security/__init__.py\", \"r\"\\) as f:\n    content = f.read\\(\\)\n\n# Fix agent_report usage: .findings -> direct list\ncontent = content.replace\\(\n    \"        log.info\\(\\\\\"Agent scan: %d findings\\\\\", len\\(agent_report.findings\\)\\)\",\n    \"        log.info\\(\\\\\"Agent scan: %d findings\\\\\", len\\(agent_report\\)\\)\"\n\\)\ncontent = content.replace\\(\n    \"    if agent_report:\\\\n        for af in agent_report.findings:\\\\n            if af.severity in severity_counts:\\\\n                severity_counts[af.severity] += 1\",\n    \"    if agent_report:\\\\n        for af in agent_report:\\\\n            if af.severity in severity_counts:\\\\n                severity_counts[af.severity] += 1\"\n\\)\n\n# Also check if agent findings are being merged into all_findings\n# The current code has them in severity_counts but not in all_findings — let's check\nprint\\(\"agent_scan field in SecurityReport constructor:\", \"agent_scan=agent_report\" in content\\)\nprint\\(\"agent findings in all_findings:\", \"agent_report\" in content.split\\(\"all_findings\"\\)[1][:200] if \"all_findings\" in content else \"N/A\"\\)\n\nwith open\\(\"/Users/n/Documents/LA-analyzer/src/la_analyzer/security/__init__.py\", \"w\"\\) as f:\n    f.write\\(content\\)\nprint\\(\"__init__.py updated\"\\)\nPYEOF)",
+      "Bash(python -m pytest tests/test_security.py tests/test_agent_scan.py -x -q 2>&1 | tail -30)",
+      "Bash(python -m pytest tests/test_security.py tests/test_agent_scan.py -x -q 2>&1 | head -20)",
+      "Bash(python3 - <<'PYEOF'\nimport sys\nsys.path.insert\\(0, '/Users/n/Documents/LA-analyzer/src'\\)\n# Test that basic imports work now\ntry:\n    from la_analyzer.analyzer.models import Evidence, ChangeFile\n    print\\(\"analyzer.models imports OK\"\\)\nexcept Exception as e:\n    print\\(f\"analyzer.models import FAILED: {e}\"\\)\n\ntry:\n    from la_analyzer.security.models import SecurityFinding, SecurityReport\n    print\\(\"security.models imports OK\"\\)\nexcept Exception as e:\n    print\\(f\"security.models import FAILED: {e}\"\\)\n\ntry:\n    from la_analyzer.security.data_flow import scan_data_flow\n    print\\(\"data_flow imports OK\"\\)\nexcept Exception as e:\n    print\\(f\"data_flow import FAILED: {e}\"\\)\n\ntry:\n    from la_analyzer.security.credential_leak import scan_credential_leaks\n    print\\(\"credential_leak imports OK\"\\)\nexcept Exception as e:\n    print\\(f\"credential_leak import FAILED: {e}\"\\)\n\ntry:\n    from la_analyzer.security.agent_scan import scan_agents\n    print\\(\"agent_scan imports OK\"\\)\nexcept Exception as e:\n    print\\(f\"agent_scan import FAILED: {e}\"\\)\nPYEOF)",
+      "Bash(git stash pop)",
+      "Bash(python -m pytest -q 2>&1 | tail -20)",
+      "Bash(python -m pytest tests/ -q 2>&1 | tail -30)"
+    ]
+  }
+}

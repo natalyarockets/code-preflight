@@ -116,6 +116,7 @@ class SecretFinding(BaseModel):
     value_redacted: str
     evidence: list[Evidence] = Field(default_factory=list)
     confidence: float = 0.5
+    origin: str = "ast_name"  # "ast_name", "dotenv", "detect_secrets", "token_pattern"
 
 
 class SecretsReport(BaseModel):

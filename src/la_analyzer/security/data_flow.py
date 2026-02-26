@@ -13,7 +13,7 @@ from la_analyzer.utils import snippet
 # Names that indicate LLM SDK usage
 _LLM_CALL_METHODS = {"create", "generate", "complete", "chat", "invoke", "ainvoke"}
 _LLM_LIBS = {
-    "openai", "anthropic", "livingapps_gateway",
+    "openai", "anthropic",
     "langchain", "langchain_core", "langchain_openai", "langchain_anthropic",
     "langchain_community",
 }
@@ -60,28 +60,12 @@ _PII_FIELD_RE = re.compile(
 def scan_data_flow(
     workspace: Path,
     py_files: list[Path],
-    data_classifications: list | None = None,
 ) -> list[SecurityFinding]:
-    """Analyze data flow from file reads to LLM calls.
-
-    Args:
-        data_classifications: Optional list of DataClassification dicts/objects
-            from classify_data(). When provided, detected PII/financial/health
-            field names are merged into pii_fields_in_path for richer reports.
-    """
+    """Analyze data flow from file reads to LLM calls."""
     risks: list[SecurityFinding] = []
     # Dedup key: (file, line, category, sink) — sink discriminates findings at the
     # same line that differ by target (e.g. output_file vs http at line 42).
     seen_risks: set[tuple[str, int, str, str]] = set()
-
-    # Build a set of classified field names from the data classifier
-    classified_fields: set[str] = set()
-    if data_classifications:
-        for dc in data_classifications:
-            cat = dc.get("category", "") if isinstance(dc, dict) else getattr(dc, "category", "")
-            if cat in ("pii", "financial", "health", "credential"):
-                fields = dc.get("fields_detected", []) if isinstance(dc, dict) else getattr(dc, "fields_detected", [])
-                classified_fields.update(fields)
 
     for fpath in py_files:
         rel = str(fpath.relative_to(workspace))
@@ -109,7 +93,7 @@ def scan_data_flow(
                 scopes.append(node)
 
         for scope in scopes:
-            _analyze_scope(scope, source, rel, has_llm, file_imports, risks, classified_fields, seen_risks)
+            _analyze_scope(scope, source, rel, has_llm, file_imports, risks, seen_risks)
 
         # Cross-function analysis: detect file reads in one function flowing
         # to external sinks (LLM, HTTP, output file) in another.
@@ -125,7 +109,6 @@ def _analyze_scope(
     has_llm: bool,
     file_imports: set[str],
     risks: list[SecurityFinding],
-    classified_fields: set[str] | None = None,
     seen_risks: set[tuple[str, int, str, str]] | None = None,
 ) -> None:
     """Analyze a single scope (function or module) for data flow patterns."""

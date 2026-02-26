@@ -74,10 +74,7 @@ def run_security_review(
         log.exception("Data classification failed")
 
     try:
-        findings = scan_data_flow(
-            workspace_dir, py_files,
-            data_classifications=[dc.model_dump() for dc in data_classifications],
-        )
+        findings = scan_data_flow(workspace_dir, py_files)
         all_findings.extend(findings)
         log.info("Data flow: %d findings", len(findings))
     except Exception:

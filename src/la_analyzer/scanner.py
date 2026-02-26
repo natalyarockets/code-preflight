@@ -74,7 +74,10 @@ def scan(
     if run_security:
         # Auto-extract requirements from analysis if not provided
         if requirements is None:
-            requirements = [d.name for d in analysis.deps.dependencies]
+            requirements = [
+                f"{d.name}{d.spec}" if d.spec else d.name
+                for d in analysis.deps.dependencies
+            ]
 
         security = run_security_review(
             workspace_dir=project_path,
@@ -185,7 +188,10 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
         ds_findings = -1
     else:
         ds_status = "ran"
-        ds_findings = len(result.analysis.secrets.findings)
+        ds_findings = sum(
+            1 for f in result.analysis.secrets.findings
+            if f.origin == "detect_secrets"
+        )
     tools.append(ToolResult(
         name="detect-secrets",
         version=ds_version or "-",
@@ -226,7 +232,8 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
     if sec:
         platform_findings = sum(
             1 for f in sec.findings
-            if f.origin != "bandit" and f.category not in ("deps", "data_flow", "credential_leak", "agent")
+            if f.origin not in ("bandit", "ir_query")
+            and f.category not in ("deps", "data_flow", "credential_leak", "agent", "secrets")
         )
     tools.append(ToolResult(
         name="LA code scanner",
@@ -237,11 +244,15 @@ def _build_toolchain(result: ScanResult, run_security: bool) -> list[ToolResult]
     ))
 
     # Secrets name scanner (part of analyzer -- always runs)
+    la_secrets_findings = sum(
+        1 for f in result.analysis.secrets.findings
+        if f.origin != "detect_secrets"
+    )
     tools.append(ToolResult(
         name="LA secrets scanner",
         version="built-in",
         status="ran",
-        findings=len(result.analysis.secrets.findings),
+        findings=la_secrets_findings,
         description=".env files, API key names, token patterns",
     ))
 

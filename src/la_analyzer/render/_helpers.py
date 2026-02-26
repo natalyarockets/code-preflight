@@ -70,6 +70,35 @@ def leak_label(target: str) -> str:
     }.get(target, target)
 
 
+def compute_entrypoint_metrics(ep) -> dict:
+    """Compute effect counts for one EntrypointProjection."""
+    reads = writes = sends = secrets = pii = llm = prompts = tools = 0
+    for eff in ep.effects:
+        src = eff.source
+        t = eff.title.lower()
+        if src == "io":
+            if "read" in t or "input" in t:
+                reads += 1
+            elif "write" in t or "output" in t or "artifact" in t:
+                writes += 1
+        elif src == "egress":
+            if "llm" in t:
+                llm += 1
+            else:
+                sends += 1
+        elif src in ("security", "secret"):
+            if "pii" in t:
+                pii += 1
+            else:
+                secrets += 1
+        elif src == "prompt":
+            prompts += 1
+        elif src == "tool":
+            tools += 1
+    return dict(reads=reads, writes=writes, sends=sends, secrets=secrets,
+                pii=pii, llm=llm, prompts=prompts, tools=tools)
+
+
 def count_py_files(analysis) -> str:
     """Return the Python file count recorded during analysis."""
     return str(analysis.py_file_count) if analysis.py_file_count else "unknown"

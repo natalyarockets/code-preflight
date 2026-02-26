@@ -28,7 +28,7 @@ from la_analyzer.analyzer.deps_scan import scan_deps
 from la_analyzer.analyzer.description_scan import scan_description
 from la_analyzer.analyzer.egress_scan import scan_egress
 from la_analyzer.analyzer.entrypoint import scan_entrypoints
-from la_analyzer.analyzer.io_scan import scan_io
+from la_analyzer.analyzer.io_scan import scan_io, _finalize_io_report
 from la_analyzer.analyzer.models import (
     AnalysisResult,
     ArchetypeMatch,
@@ -79,6 +79,7 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
     )
 
     # ── I/O scan ────────────────────────────────────────────────────────
+    # Detection only — normalization/dedup runs after all sources are merged.
     io_report = scan_io(workspace_dir, py_files)
 
     # Merge notebook I/O
@@ -92,6 +93,9 @@ def analyze_repo(workspace_dir: Path, out_dir: Path) -> AnalysisResult:
         io_report.inputs.extend(api_inputs)
         io_report.outputs.extend(api_outputs)
         io_report.api_routes.extend(api_routes)
+
+    # Finalize: dedup, role classification, enrichment — after all sources merged.
+    _finalize_io_report(io_report, workspace_dir, py_files)
 
     # ── Egress scan ─────────────────────────────────────────────────────
     egress_report = scan_egress(workspace_dir, py_files)

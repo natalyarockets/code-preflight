@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from la_analyzer.render._helpers import (
+    compute_entrypoint_metrics,
     count_py_files,
     executive_summary,
     leak_label,
@@ -229,45 +230,11 @@ def _render_entrypoint_matrix(result: ScanResult) -> str:
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
 
     for ep in p.projections:
-        reads = 0
-        writes = 0
-        sends = 0
-        secrets = 0
-        pii = 0
-        llm = 0
-        prompts = 0
-        tools = 0
-
-        for eff in ep.effects:
-            src = eff.source.lower()
-            title_lower = eff.title.lower()
-            if src == "io":
-                if "read" in title_lower or "input" in title_lower:
-                    reads += 1
-                elif "write" in title_lower or "output" in title_lower or "artifact" in title_lower:
-                    writes += 1
-            elif src == "egress":
-                if "llm" in title_lower:
-                    llm += 1
-                else:
-                    sends += 1
-            elif src == "secret":
-                secrets += 1
-            elif src == "security":
-                # Only count as PII when the finding explicitly identifies PII
-                # fields.  Generic data-flow findings ("data" in title but
-                # "PII: none") must not inflate this counter.
-                if "pii" in title_lower:
-                    pii += 1
-            elif src == "prompt":
-                prompts += 1
-            elif src == "tool":
-                tools += 1
-
+        m = compute_entrypoint_metrics(ep)
         label = ep.entrypoint_label
         reachable = len(ep.reachable_functions)
         lines.append(
-            f"| `{label}` | {reachable} | {reads} | {writes} | {sends} | {secrets} | {pii} | {llm} | {prompts} | {tools} |"
+            f"| `{label}` | {reachable} | {m['reads']} | {m['writes']} | {m['sends']} | {m['secrets']} | {m['pii']} | {m['llm']} | {m['prompts']} | {m['tools']} |"
         )
 
     lines.append("")

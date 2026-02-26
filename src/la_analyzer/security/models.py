@@ -86,7 +86,7 @@ class SecurityReport(BaseModel):
     @computed_field
     @property
     def requires_review(self) -> bool:
-        """True when any high-severity finding is present (and not blocked)."""
+        """True when any high-severity finding is present. May be True alongside deploy_blocked; gate_status resolves the precedence."""
         return any(f.severity == "high" for f in self.findings)
 
     @computed_field

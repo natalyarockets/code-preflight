@@ -152,10 +152,6 @@ def enrich_evidence_with_functions(
             _enrich(f.evidence)
         for dc in security.data_classifications:
             _enrich(dc.evidence)
-        for df in security.data_flow_risks:
-            _enrich(df.evidence)
-        for cl in security.credential_leak_risks:
-            _enrich(cl.evidence)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -238,37 +234,24 @@ def _collect_effects(
             detail=f"reads: {reads}; writes: {writes}",
         ))
 
-    # Security findings
+    # Security findings — iterate findings once; render inline extras for
+    # data_flow and credential_leak categories without double-counting.
     if security:
         for f in security.findings:
+            if f.category == "data_flow":
+                title = f"Data flow: {f.data_source} -> {f.data_sink}" if f.data_source and f.data_sink else f.title
+            elif f.category == "credential_leak":
+                title = f"Credential leak: {f.credential_name}" if f.credential_name else f.title
+            else:
+                title = f.title
             for ev in f.evidence:
                 effects.append(ProjectedEffect(
                     source="security",
-                    title=f.title,
+                    title=title,
                     severity=f.severity,
                     file=ev.file, line=ev.line,
                     function_name=ev.function_name,
                     detail=f.description,
-                ))
-        for df in security.data_flow_risks:
-            for ev in df.evidence:
-                effects.append(ProjectedEffect(
-                    source="security",
-                    title=f"Data flow: {df.data_source} -> {df.data_sink}",
-                    severity=df.severity,
-                    file=ev.file, line=ev.line,
-                    function_name=ev.function_name,
-                    detail=df.description,
-                ))
-        for cl in security.credential_leak_risks:
-            for ev in cl.evidence:
-                effects.append(ProjectedEffect(
-                    source="security",
-                    title=f"Credential leak: {cl.credential_name}",
-                    severity=cl.severity,
-                    file=ev.file, line=ev.line,
-                    function_name=ev.function_name,
-                    detail=cl.description,
                 ))
 
     return effects

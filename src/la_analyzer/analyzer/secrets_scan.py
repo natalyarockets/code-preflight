@@ -61,6 +61,7 @@ def scan_secrets(workspace: Path, py_files: list[Path], all_files: list[Path]) -
                 value_redacted=f"<{fpath.name} file>",
                 evidence=[Evidence(file=rel, line=1, snippet=f"Dotenv file found: {fpath.name}")],
                 confidence=0.95,
+                origin="dotenv",
             ))
             seen.add(f"{rel}:1")
             # Parse .env to suggest var names
@@ -189,6 +190,7 @@ def _detect_secrets_scan(
                             snippet=_snippet_from_file(fpath, line),
                         )],
                         confidence=0.85,
+                        origin="detect_secrets",
                     ))
     except Exception:
         log.exception("detect-secrets scan failed, falling back to built-in scanner")
@@ -254,6 +256,7 @@ def _ast_name_scan(workspace: Path, py_files: list[Path]) -> list[SecretFinding]
                                             snippet=snippet(source, node.lineno),
                                         )],
                                         confidence=0.9,
+                                        origin="ast_name",
                                     ))
 
             # Dict literals with secret-like keys: {"api_key": "sk-..."}
@@ -277,6 +280,7 @@ def _ast_name_scan(workspace: Path, py_files: list[Path]) -> list[SecretFinding]
                                     snippet=snippet(source, node.lineno),
                                 )],
                                 confidence=0.85,
+                                origin="ast_name",
                             ))
 
             # Keyword args with secret-like names: client(api_key="sk-...")
@@ -299,6 +303,7 @@ def _ast_name_scan(workspace: Path, py_files: list[Path]) -> list[SecretFinding]
                                     snippet=snippet(source, kw.value.lineno),
                                 )],
                                 confidence=0.9,
+                                origin="ast_name",
                             ))
 
     return findings
@@ -339,6 +344,7 @@ def _ast_full_scan(
                                             snippet=snippet(source, node.lineno),
                                         )],
                                         confidence=0.9,
+                                        origin="ast_name",
                                     ))
                                     if name:
                                         pass  # suggested_vars handled by caller
@@ -364,6 +370,7 @@ def _ast_full_scan(
                                     snippet=snippet(source, node.lineno),
                                 )],
                                 confidence=0.85,
+                                origin="ast_name",
                             ))
 
             # Keyword args with secret-like names
@@ -386,6 +393,7 @@ def _ast_full_scan(
                                     snippet=snippet(source, kw.value.lineno),
                                 )],
                                 confidence=0.9,
+                                origin="ast_name",
                             ))
 
             # Look for token-like string constants
@@ -406,6 +414,7 @@ def _ast_full_scan(
                                         snippet=snippet(source, node.lineno),
                                     )],
                                     confidence=0.75,
+                                    origin="token_pattern",
                                 ))
                             break
 

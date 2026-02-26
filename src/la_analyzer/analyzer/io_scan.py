@@ -96,11 +96,13 @@ def _label_from_arg(arg_name: str) -> str:
 def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
     inputs: list[IOInput] = []
     outputs: list[IOOutput] = []
-    hardcoded: list[HardcodedPath] = []
+    hardcoded_dict: dict[str, HardcodedPath] = {}
     _input_counter = 0
     _output_counter = 0
-    seen_input_paths: set[str] = set()
-    seen_output_paths: set[str] = set()
+    seen_input_paths: set[str] = set()   # for path-literal dedup only
+    seen_output_paths: set[str] = set()  # for path-literal dedup only
+    seen_input_ids: set[str] = set()     # for generated-ID dedup
+    seen_output_ids: set[str] = set()    # for generated-ID dedup
 
     for fpath in py_files:
         rel = str(fpath.relative_to(workspace))
@@ -110,7 +112,7 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
         except SyntaxError:
             # Fall back to regex for unparseable files
             _input_counter, _output_counter = _regex_fallback(
-                source, rel, inputs, outputs, hardcoded,
+                source, rel, inputs, outputs, hardcoded_dict,
                 seen_input_paths, seen_output_paths,
                 _input_counter, _output_counter,
             )
@@ -165,7 +167,10 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         ))
                         _output_counter += 1
                     if path_lit and not is_computed:
-                        hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+                        if path_lit in hardcoded_dict:
+                            hardcoded_dict[path_lit].evidence.append(ev)
+                        else:
+                            hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
                 else:
                     fmt = _format_from_path(path_lit)
                     if path_lit and path_lit not in seen_input_paths:
@@ -178,7 +183,10 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         ))
                         _input_counter += 1
                     if path_lit and not is_computed:
-                        hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+                        if path_lit in hardcoded_dict:
+                            hardcoded_dict[path_lit].evidence.append(ev)
+                        else:
+                            hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
 
             # pd.read_* calls
             if isinstance(node, ast.Call):
@@ -202,7 +210,10 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         ))
                         _input_counter += 1
                     if path_lit:
-                        hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+                        if path_lit in hardcoded_dict:
+                            hardcoded_dict[path_lit].evidence.append(ev)
+                        else:
+                            hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
 
             # .to_csv(), .to_json(), savefig()
             if isinstance(node, ast.Call):
@@ -235,7 +246,10 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         ))
                         _output_counter += 1
                     if path_lit:
-                        hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+                        if path_lit in hardcoded_dict:
+                            hardcoded_dict[path_lit].evidence.append(ev)
+                        else:
+                            hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
 
             # write_text() / write_bytes() — path is the receiver, not the first arg
             if isinstance(node, ast.Call):
@@ -274,7 +288,10 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         ))
                         _output_counter += 1
                     if path_lit and not is_computed:
-                        hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+                        if path_lit in hardcoded_dict:
+                            hardcoded_dict[path_lit].evidence.append(ev)
+                        else:
+                            hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
 
             # argparse add_argument with default file paths or directories
             if isinstance(node, ast.Call) and _call_attr(node) == "add_argument":
@@ -324,8 +341,12 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                                     evidence=[ev], confidence=0.7,
                                 ))
                                 _input_counter += 1
-                        if default_val not in seen_input_paths and default_val not in seen_output_paths:
-                            hardcoded.append(HardcodedPath(path=default_val, evidence=[ev]))
+                        # Always record as a hardcoded path — check was incorrectly
+                        # gated on seen_* sets that were just populated above.
+                        if default_val in hardcoded_dict:
+                            hardcoded_dict[default_val].evidence.append(ev)
+                        else:
+                            hardcoded_dict[default_val] = HardcodedPath(path=default_val, evidence=[ev])
 
             # csv.reader / csv.DictReader / csv.writer / csv.DictWriter
             if isinstance(node, ast.Call):
@@ -343,7 +364,8 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                     )
                     if is_csv_write:
                         csv_id = f"output_{_output_counter}"
-                        if csv_id not in seen_output_paths:
+                        if csv_id not in seen_output_ids:
+                            seen_output_ids.add(csv_id)
                             outputs.append(IOOutput(
                                 id=csv_id, label="CSV Output",
                                 format="csv", path_literal=None,
@@ -352,7 +374,8 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                             _output_counter += 1
                     else:
                         csv_id = f"input_{_input_counter}"
-                        if csv_id not in seen_input_paths:
+                        if csv_id not in seen_input_ids:
+                            seen_input_ids.add(csv_id)
                             inputs.append(IOInput(
                                 id=csv_id, label="CSV Input",
                                 kind="file", format="csv", path_literal=None,
@@ -438,34 +461,47 @@ def scan_io(workspace: Path, py_files: list[Path]) -> IOReport:
                         ))
                         _input_counter += 1
                     if path_lit:
-                        hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+                        if path_lit in hardcoded_dict:
+                            hardcoded_dict[path_lit].evidence.append(ev)
+                        else:
+                            hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
 
         # Regex fallback for any string literals that look like file paths
         _input_counter, _output_counter = _regex_fallback(
-            source, rel, inputs, outputs, hardcoded,
+            source, rel, inputs, outputs, hardcoded_dict,
             seen_input_paths, seen_output_paths,
             _input_counter, _output_counter,
         )
 
-    # ── Post-processing dedup ─────────────────────────────────────────────
+    return IOReport(inputs=inputs, outputs=outputs, hardcoded_paths=list(hardcoded_dict.values()))
+
+
+def _finalize_io_report(
+    io_report: IOReport,
+    workspace: Path,
+    py_files: list[Path],
+) -> None:
+    """Run dedup, role classification, and enrichment on a merged IOReport.
+
+    Call this from analyze_repo() AFTER all sources (scan_io + notebooks + API)
+    have been merged into io_report. Mutates io_report in place.
+    """
     # Remove entries that are strictly less informative than other entries.
-    inputs = _dedup_entries(inputs)
-    outputs = _dedup_entries(outputs)
+    io_report.inputs = _dedup_entries(io_report.inputs)
+    io_report.outputs = _dedup_entries(io_report.outputs)
 
     # Remove directory outputs when we have concrete file outputs.
     # A directory (e.g. argparse --output="/outputs") is just a container,
     # not a real artifact.
-    if any(o.format != "directory" for o in outputs):
-        outputs = [o for o in outputs if o.format != "directory"]
+    if any(o.format != "directory" for o in io_report.outputs):
+        io_report.outputs = [o for o in io_report.outputs if o.format != "directory"]
 
     # Classify output roles: debug/logging artifacts vs primary results
-    for out in outputs:
+    for out in io_report.outputs:
         out.role = _classify_output_role(out)
 
     # Enrich inputs with accepted formats and descriptions
-    _enrich_inputs(workspace, py_files, inputs)
-
-    return IOReport(inputs=inputs, outputs=outputs, hardcoded_paths=hardcoded)
+    _enrich_inputs(workspace, py_files, io_report.inputs)
 
 
 def _enrich_inputs(workspace: Path, py_files: list[Path], inputs: list[IOInput]) -> None:
@@ -540,19 +576,6 @@ def _find_field_references(tree: ast.Module) -> list[str]:
     dict constructors, etc.)
     """
     fields: list[str] = []
-
-    # Build set of names assigned from os.environ / os.environ.get
-    env_vars: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript):
-            # os.environ["KEY"]
-            if isinstance(node.value, ast.Attribute) and node.value.attr == "environ":
-                continue  # skip this access entirely
-        if isinstance(node, ast.Call):
-            # os.environ.get("KEY")
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "get":
-                if isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "environ":
-                    continue
 
     for node in ast.walk(tree):
         # df["column_name"] or row["field"]
@@ -639,7 +662,7 @@ def _classify_output_role(out: IOOutput) -> str:
 def _regex_fallback(
     source: str, rel: str,
     inputs: list[IOInput], outputs: list[IOOutput],
-    hardcoded: list[HardcodedPath],
+    hardcoded_dict: dict[str, HardcodedPath],
     seen_in: set[str], seen_out: set[str],
     ic: int, oc: int,
 ) -> tuple[int, int]:
@@ -652,7 +675,10 @@ def _regex_fallback(
         ev = Evidence(file=rel, line=lineno, snippet=source.splitlines()[lineno - 1].strip()[:160])
         # Heuristic: not already tracked
         if path_lit not in seen_in and path_lit not in seen_out:
-            hardcoded.append(HardcodedPath(path=path_lit, evidence=[ev]))
+            if path_lit in hardcoded_dict:
+                hardcoded_dict[path_lit].evidence.append(ev)
+            else:
+                hardcoded_dict[path_lit] = HardcodedPath(path=path_lit, evidence=[ev])
     return ic, oc
 
 
@@ -750,9 +776,6 @@ def _extract_filename_from_expr(node: ast.expr) -> str | None:
         if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
             return node.right.value
     return None
-
-# Keep old name for backward compat with any callers
-_extract_filename_from_call = _extract_filename_from_expr
 
 
 def _format_from_path(path: str | None) -> str:

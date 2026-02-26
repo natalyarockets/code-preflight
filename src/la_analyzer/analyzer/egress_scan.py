@@ -96,12 +96,6 @@ _DEFAULT_DOMAINS: dict[str, list[str]] = {
     "smtplib": ["(configured smtp host)"],
 }
 
-# Regex for URLs/domains in string literals
-_URL_RE = re.compile(
-    r"""["'](https?://([a-zA-Z0-9.-]+(?:\.[a-zA-Z]{2,}))[^"']*?)["']"""
-)
-
-
 
 def scan_egress(workspace: Path, py_files: list[Path]) -> EgressReport:
     calls: list[OutboundCall] = []

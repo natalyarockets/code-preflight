@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 
 from la_analyzer.render._helpers import (
+    compute_entrypoint_metrics,
     count_py_files,
     executive_summary,
     latin1,
@@ -504,34 +505,12 @@ class _SecurityReportPDF:
         self._table_header(_MATRIX_COLS, headers)
 
         for row_idx, ep in enumerate(p.projections):
-            reads = writes = sends = secrets = pii = llm = prompts = tools = 0
-            for eff in ep.effects:
-                src = eff.source.lower()
-                title_lower = eff.title.lower()
-                if src == "io":
-                    if "read" in title_lower or "input" in title_lower:
-                        reads += 1
-                    elif "write" in title_lower or "output" in title_lower or "artifact" in title_lower:
-                        writes += 1
-                elif src == "egress":
-                    if "llm" in title_lower:
-                        llm += 1
-                    else:
-                        sends += 1
-                elif src == "secret":
-                    secrets += 1
-                elif src == "security":
-                    if "pii" in title_lower:
-                        pii += 1
-                elif src == "prompt":
-                    prompts += 1
-                elif src == "tool":
-                    tools += 1
-
+            m = compute_entrypoint_metrics(ep)
             reachable = len(ep.reachable_functions)
             self._table_row(_MATRIX_COLS, [
-                ep.entrypoint_label, str(reachable), str(reads), str(writes),
-                str(sends), str(secrets), str(pii), str(llm), str(prompts), str(tools),
+                ep.entrypoint_label, str(reachable), str(m['reads']), str(m['writes']),
+                str(m['sends']), str(m['secrets']), str(m['pii']), str(m['llm']),
+                str(m['prompts']), str(m['tools']),
             ], row_idx)
 
         self._pdf.ln(3)

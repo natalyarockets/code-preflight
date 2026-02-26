@@ -57,6 +57,11 @@ These are hard rules. If you think you need to break one, stop and ask.
 - Egress rows are formatted inline per renderer (markdown bold vs plain text). No shared helper needed.
 - `top_risks()` returns `list[str]`. Renderers call it; they do not re-derive top risks.
 
+### Toolchain counts (`scanner.py`)
+- "LA code scanner" counts: `origin not in ("bandit", "ir_query")` AND `category not in ("deps", "data_flow", "credential_leak", "agent", "secrets")`. IR findings are counted by "Effect graph scanner" only.
+- "Effect graph scanner" counts: `origin == "ir_query"`.
+- "detect-secrets" counts: `SecretFinding.origin == "detect_secrets"`. "LA secrets scanner" counts everything else.
+
 ### IR system (`ir/`)
 - `data_flow_risks`/`credential_leak_risks` filtered views have no place in IR queries. IR queries operate on `security.findings` via `existing_findings` parameter.
 - Secrets conversion happens **before** IR queries in `security/__init__.py` so IR severity fusion sees the full finding set.
@@ -93,6 +98,10 @@ These are hard rules. If you think you need to break one, stop and ask.
 - Used same set for path literals and generated IDs in io_scan dedup → semantically invalid checks
 - Appended new `HardcodedPath` per occurrence instead of merging by path → inflated count
 - Ran I/O normalization before all I/O sources were merged → notebook/API entries bypassed dedup
+- Argparse default path values gated on `seen_*` sets that were just populated → paths never reached `hardcoded_dict`
+- `_regex_fallback()` called with `hardcoded` instead of `hardcoded_dict` → NameError on any unparseable file
+- Used `livingapps_gateway` in `_LLM_LIBS` — Living Apps residue, removed
+- "LA code scanner" toolchain count included IR findings → double-counted with "Effect graph scanner"
 
 ---
 
