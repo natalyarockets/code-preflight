@@ -1,6 +1,6 @@
-# LA Analyzer
+# Code Preflight
 
-Know what your Python project actually does before you deploy it. LA Analyzer scans your code without running it and produces a plain-English report: what data leaves your repo, what secrets are exposed, what could go wrong, and whether it's safe to ship.
+Know what your Python project actually does before you deploy it. Code Preflight scans your code without running it and produces a plain-English report: what data leaves your repo, what secrets are exposed, what could go wrong, and whether it's safe to ship.
 
 Built for people building internal tools with AI coding assistants (Cursor, Claude Code, GitHub Copilot) who want confidence that the code they're deploying is safe. If you can run a terminal command, you can use this.
 
@@ -16,11 +16,11 @@ These tools are all valuable, but they solve adjacent problems:
 | Tool | What it does |
 |---|---|
 | Bandit / Semgrep | Generic Python SAST — pattern-matching rules with no AI-app domain knowledge. Bandit is flow-insensitive and flags every `os.system()` equally. Semgrep is powerful but requires custom rules per-SDK, and neither produces a holistic egress report. |
-| Garak / LLM Guard / Vigil / Rebuff | These analyze or guard the **LLM model itself** (adversarial probes, runtime filters). LA Analyzer analyzes the **code that builds the app**, before it ships. |
+| Garak / LLM Guard / Vigil / Rebuff | These analyze or guard the **LLM model itself** (adversarial probes, runtime filters). Code Preflight analyzes the **code that builds the app**, before it ships. |
 | pip-audit / Safety | Dependency scanning only — no structural or data-flow analysis. |
-| Semgrep with custom rules | Gets you further, but you're writing and maintaining rules per library. LA Analyzer has the AI-app semantic model built in: it knows what `sentry_sdk.init()` does, what `graph_app.ainvoke()` is, and how LangGraph state maps to API routes. |
+| Semgrep with custom rules | Gets you further, but you're writing and maintaining rules per library. Code Preflight has the AI-app semantic model built in: it knows what `sentry_sdk.init()` does, what `graph_app.ainvoke()` is, and how LangGraph state maps to API routes. |
 
-The specific gap LA Analyzer fills: **static analysis that understands the semantics of building AI apps.** It answers "what data leaves this codebase, to whom, and is it safe to deploy?" — not "does this line match a known bad pattern?"
+The specific gap Code Preflight fills: **static analysis that understands the semantics of building AI apps.** It answers "what data leaves this codebase, to whom, and is it safe to deploy?" — not "does this line match a known bad pattern?"
 
 ## Install
 
@@ -304,11 +304,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-283 tests across 15 test files. Runs in under 3 seconds.
+289 tests across 15 test files. Runs in under 5 seconds.
 
 ## Sweet spot and limits
 
-### Where LA Analyzer works well
+### Where Code Preflight works well
 
 **FastAPI or Streamlit apps backed by LLM APIs.** If you have a web app that calls OpenAI, Anthropic, or a LangChain/LangGraph pipeline, the tool maps your routes, traces data from request parameters into prompts, detects missing auth guards, and surfaces any implicit telemetry egress.
 
@@ -328,7 +328,7 @@ pytest
 
 **Complex multi-branch state machines.** Deep conditional routing (many `if/elif` chains gating which tools fire) can cause reachability analysis to miss some paths. The call graph is conservative: it will catch most effects but may miss some in heavily branched workflows.
 
-**Multi-repo architectures.** LA Analyzer sees one codebase at a time. Cross-service data flows — data that exits repo A, enters repo B via an internal API, and then reaches an LLM — are not traced.
+**Multi-repo architectures.** Code Preflight sees one codebase at a time. Cross-service data flows — data that exits repo A, enters repo B via an internal API, and then reaches an LLM — are not traced.
 
 **Very large codebases.** Files over 2MB are skipped. The AST walker is fast but very large monorepos may produce incomplete results in deeper subdirectories.
 
@@ -344,7 +344,7 @@ Python >=3.11. Only three runtime dependencies: pydantic, pyyaml, click.
 
 ## Deploying safe internal tools
 
-LA Analyzer tells you what's wrong. If you need help fixing it and deploying safely, [Living Apps](https://livingapps.io) is the full platform: managed secrets, egress controls, LLM gateway, and one-click deploys for internal Python tools.
+Code Preflight tells you what's wrong. If you need help fixing it and deploying safely, [Living Apps](https://livingapps.io) is the full platform: managed secrets, egress controls, LLM gateway, and one-click deploys for internal Python tools.
 
 ## License
 
