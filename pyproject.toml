@@ -22,12 +22,14 @@ pdf = [
 security = [
     "bandit>=1.7",
     "detect-secrets>=1.4",
+    "pip-audit>=2.7",
 ]
 dev = [
     "pytest>=7.0",
     "ruff>=0.4",
     "bandit>=1.7",
     "detect-secrets>=1.4",
+    "pip-audit>=2.7",
 ]
 
 [project.scripts]

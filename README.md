@@ -25,10 +25,12 @@ The specific gap Code Preflight fills: **static analysis that understands the se
 ## Install
 
 ```bash
-pip install .
+pip install .                    # core (no external scanners)
+pip install ".[security]"        # + bandit, detect-secrets, pip-audit
+pip install ".[security,pdf]"    # + PDF report generation
 ```
 
-For PDF reports: `pip install ".[pdf]"`
+The `security` extra enables three external scanners that run alongside the built-in analysis: **bandit** (code security patterns), **detect-secrets** (entropy-based secret detection), and **pip-audit** (known CVEs in your dependencies via NIST NVD). Without them the scan still runs — the toolchain appendix will show which tools were skipped.
 
 ## Usage
 
@@ -300,7 +302,7 @@ ir_findings = run_all_queries(graph)
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"    # includes bandit, detect-secrets, pip-audit
 pytest
 ```
 
