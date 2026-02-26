@@ -321,7 +321,7 @@ def test_render_structural_summary_compact():
 
 
 def test_full_report_section_order():
-    """Sections should follow the security-first layout."""
+    """Sections should follow the security-first layout with structure after trust boundaries."""
     security = SecurityReport(
         findings=[SecurityFinding(
             category="injection", severity="high", title="exec() usage",
@@ -364,11 +364,11 @@ def test_full_report_section_order():
     for name, pos in positions.items():
         assert pos != -1, f"Section '{name}' not found in report"
 
-    # Summary before matrix before findings before call graph before structure
-    assert positions["summary"] < positions["matrix"]
+    # Summary before structure before matrix before findings before call graph
+    assert positions["summary"] < positions["structure"]
+    assert positions["structure"] < positions["matrix"]
     assert positions["matrix"] < positions["findings"]
     assert positions["findings"] < positions["call_graph"]
-    assert positions["call_graph"] < positions["structure"]
 
 
 def test_no_security_scan_still_renders():

@@ -41,28 +41,28 @@ def render_markdown(result: ScanResult) -> str:
     # 3. Trust boundaries
     sections.append(_render_trust_boundaries(result))
 
-    # 3b. LLM Prompt Analysis
-    sections.append(_render_prompt_surfaces(result))
-
-    # 3c. Tool Registration Map
-    sections.append(_render_tool_registrations(result))
-
-    # 3d. State Flow
-    sections.append(_render_state_flow(result))
-
-    # 4. Entrypoint effect matrix
-    sections.append(_render_entrypoint_matrix(result))
-
-    # 5. Detailed security findings
-    sections.append(_render_security_findings(result))
-
-    # 6. Call graph (mermaid)
-    sections.append(_render_mermaid_call_graph(result))
-
-    # 7. Condensed structural summary
+    # 4. Condensed structural summary
     sections.append(_render_structural_summary(result))
 
-    # 8. Scan toolchain audit trail
+    # 5. LLM Prompt Analysis
+    sections.append(_render_prompt_surfaces(result))
+
+    # 6. Tool Registration Map
+    sections.append(_render_tool_registrations(result))
+
+    # 7. State Flow
+    sections.append(_render_state_flow(result))
+
+    # 8. Entrypoint effect matrix
+    sections.append(_render_entrypoint_matrix(result))
+
+    # 9. Detailed security findings
+    sections.append(_render_security_findings(result))
+
+    # 10. Call graph (mermaid)
+    sections.append(_render_mermaid_call_graph(result))
+
+    # 11. Scan toolchain audit trail
     sections.append(_render_toolchain(result))
 
     return "\n".join(s for s in sections if s)
